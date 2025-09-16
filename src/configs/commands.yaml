@@ -1,0 +1,46 @@
+split_video:
+  ffmpeg_cmd:
+    - "ffmpeg"
+    - "-i"
+    - "{input_file}"
+    - "-c"
+    - "copy"
+    - "-map"
+    - "0"
+    - "-segment_time"
+    - "{chunk_length}"
+    - "-f"
+    - "segment"
+    - "-reset_timestamps"
+    - "1"
+    - "{final_dir}/chunk_%03d.mp4"
+
+convert_to_audio:
+  conversion_command:
+    - "ffmpeg"
+    - "-y"
+    - "-i"
+    - "{video_file}"
+    - "-ar"
+    - "16000"
+    - "-ac"
+    - "1"
+    - "{audio_path}"
+
+asr:
+  asr_command:
+    - "python"
+    - "python-clients/scripts/asr/transcribe_file_offline.py"
+    - "--server"
+    - "grpc.nvcf.nvidia.com:443"
+    - "--use-ssl"
+    - "--metadata"
+    - "function-id"
+    - "b702f636-f60c-4a3d-a6f4-f3568c13bd7d"
+    - "--metadata"
+    - "authorization"
+    - "Bearer {NVIDIA_RIVA}"
+    - "--language-code"
+    - "{lang_code}"
+    - "--input-file"
+    - "{audio_path}"
