@@ -1,21 +1,16 @@
 from dotenv import load_dotenv
-
 load_dotenv()
 
 import os
 import traceback
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-os.chdir(os.path.dirname(os.path.abspath(__file__)))
-print("files:", os.listdir())
-
 from src.utils.logger_config import LoggerConfig
-from src.utils.models import RagCase
+from src.utils.models import RagCase, DbSummarize, DeleteCaseRequest
 from src.utils.vectorstore import get_vectorstore_handler
-
+from src.utils.summarize_db_schema import run_summarizer
 from src.rag_flow import RagFlow
-
 
 app = FastAPI()
 app.add_middleware(
@@ -32,7 +27,7 @@ logger = LoggerConfig().logger
 @app.post("/chat")
 async def chat(lead: RagCase):
     rag_pipeline = RagFlow()
-    
+
     try:
         logger.info("Generating the response")
 
@@ -54,6 +49,15 @@ async def chat(lead: RagCase):
         logger.error(f"Error in chatbot_evidence: {str(e)}\n{error_trace}")
         return {"error": str(e)}
 
+@app.post("/summarize_db")
+async def db_summarize(lead: DbSummarize):
+    try:
+        await run_summarizer(db_name= lead.db_name)
+        return {"message": f"Summarized the schema for {lead.db_name} database"}
+    except Exception as e:
+        logger.error("Error during summarizing db schema: {e}")
+        return {"message": "Error occurred go through the logs for resolution"}
+
 @app.get("/view_chunks")
 async def get_case_data():
     """Fetch all chunks stored in ChromaDB for a given case_id from both 'documents' and 'chat_history' collections."""
@@ -74,6 +78,28 @@ async def get_case_data():
 
     except Exception as e:
         return {"error": str(e)}
+
+@app.post("/delete_summary_data")
+def delete_summary_data(req: DeleteCaseRequest):
+    # Initialize your vector store handler
+    from src.utils.vectorstore import VectorStoreHandler
+    vs = VectorStoreHandler()
+
+    collections = [name.strip() for name in req.collection_names.split(",") if name.strip()]
+    deleted_collections = []
+
+    for collection in collections:
+        try:
+            vs.delete_by_case_id(collection, req.db_name)
+            deleted_collections.append(collection)
+        except ValueError as ve:
+            raise HTTPException(status_code=400, detail=f"Invalid collection: {collection} - {ve}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Deletion failed for {collection}: {e}")
+
+    return {
+        "message": f"Deleted documents for case_id '{req.db_name}' from collections: {', '.join(deleted_collections)}"
+    }
 
 if __name__ == "__main__":
     import uvicorn

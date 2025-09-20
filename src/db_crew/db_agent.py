@@ -11,39 +11,41 @@ logger_config = LoggerConfig()
 logger = logger_config.logger
 
 
-class SqlOutput(BaseModel):
-    sql: str = Field(
-        ...,
-        description="Sql query generated from the natural language prompt",
+class DbOutput(BaseModel):
+    Domain: str = Field(
+        ..., description="A short phrase describing the database domain"
+    )
+    Summary: str = Field(
+        ..., description="One or two detailed paragraphs about the database"
     )
 
-def nl_to_sql_task_callback(output):
-    logger.info("nl_to_sql_task is complete")
+def db_task_callback(output):
+    logger.info("db_task is complete")
 
 
 @CrewBase
-class TsqlCrew:
+class DbCrew:
     """Crew for generating reports and logging transcripts into vector DB"""
 
     @agent
-    def NL2SQL_Agent(self) -> Agent:
-        logger.info("Initializing NL2SQL_Agent...")
+    def Db_Agent(self) -> Agent:
+        logger.info("Initializing Db_Agent...")
         agent = Agent(
-            config=self.agents_config["NL2SQL_Agent"],
+            config=self.agents_config["Db_Agent"],
             verbose=True,
             llm=get_llm_model(),
         )
-        logger.info("NL2SQL_Agent initialized successfully.")
+        logger.info("Db_Agent initialized successfully.")
         return agent
     @task
-    def nl_to_sql_task(self) -> Task:
+    def db_task(self) -> Task:
         logger.info("Creating nl to sql task...")
         task = Task(
-            config=self.tasks_config["nl_to_sql_task"],
-            output_pydantic=SqlOutput,
-            callback=nl_to_sql_task_callback,
+            config=self.tasks_config["db_task"],
+            output_pydantic=DbOutput,
+            callback=db_task_callback,
         )
-        logger.info("nl to sql task created successfully.")
+        logger.info("db task created successfully.")
         return task
     
 
@@ -57,5 +59,5 @@ class TsqlCrew:
             tasks=self.tasks,
             verbose=True,
         )
-        logger.info("TsqlCrew initialized successfully.")
+        logger.info("DbCrew initialized successfully.")
         return crew

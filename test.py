@@ -65,15 +65,12 @@ db_name="bike_1"
 db_handler=DatabaseHandler(db_name)
 db_schema=db_handler.get_db_schema_json()
 
-
-from src.utils.summary import run
+import asyncio
+from src.utils.summary import summarize_schema
 from src.utils.vectorstore import get_vectorstore_handler
 
-output=json.loads(run(db_schema))
-# for key,value in output.items():
-#     print(key)
-#     print(value)
+result=asyncio.run(summarize_schema(db_schema))
 
 vector_store=get_vectorstore_handler()
-vector_store.add_summary(db_name=db_name,text=output.get("Summary"))
+vector_store.add_summary(db_name=db_name,text=result)
 

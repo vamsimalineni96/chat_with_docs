@@ -42,15 +42,13 @@ class VectorStoreHandler:
             logger.error("Failed to initialize local ChromaDB: %s", str(e))
             self.chroma_client = None
             self.collection = None
-            self.case_chat_history = None
-            self.evidence_chat_history = None
 
     def delete_by_case_id(self, collection_name: str, target_case_id: str) -> int:
         # Iterate over each collection and delete documents matching the case_id
         try:
             collection = self.chroma_client.get_collection(name=collection_name)
-            collection.delete(where={"case_id": target_case_id})
-            print(
+            collection.delete(where={"db_name": target_case_id})
+            logger.info(
                 f"Deleted documents with case_id '{target_case_id}' from collection '{collection_name}'."
             )
         except Exception as e:
@@ -58,14 +56,19 @@ class VectorStoreHandler:
 
     def add_summary(self, db_name: str, text: str):
         embeddings, text_chunks = self.embedder.get_summary_embeddings(text)
-        for chunk, embedding in zip(text_chunks, embeddings):
-            doc_id = str(uuid.uuid4())
-            self.collection.add(
-                ids=[doc_id],
-                embeddings=[embedding],
-                documents=[chunk],
-                metadatas=[{"db_name": db_name,}],
-            )
+        try:    
+            for chunk, embedding in zip(text_chunks, embeddings):
+                doc_id = str(uuid.uuid4())
+                self.collection.add(
+                    ids=[doc_id],
+                    embeddings=[embedding],
+                    documents=[chunk],
+                    metadatas=[{"db_name": db_name,}],
+                )
+            logger.info("Successfully added the documents to chromadb")
+        except Exception as e:
+            logger.error(f"Failed to add documents to chromadb: {e}")
+
     def query(self,query: str):
         embeddings,_ = self.embedder.get_summary_embeddings(query)
         results = self.collection.query(
