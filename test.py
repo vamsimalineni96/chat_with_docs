@@ -64,13 +64,5 @@ def create_dataset(inp_file, op_file, num_ques):
 db_name="bike_1"
 db_handler=DatabaseHandler(db_name)
 db_schema=db_handler.get_db_schema_json()
-
-import asyncio
-from src.utils.summary import summarize_schema
-from src.utils.vectorstore import get_vectorstore_handler
-
-result=asyncio.run(summarize_schema(db_schema))
-
-vector_store=get_vectorstore_handler()
-vector_store.add_summary(db_name=db_name,text=result)
-
+query="SELECT T1.lat ,  T1.long ,  T1.city FROM station AS T1 JOIN trip AS T2 ON T1.id  =  T2.start_station_id ORDER BY T2.duration LIMIT 1"
+print(db_handler.execute_command(query))
