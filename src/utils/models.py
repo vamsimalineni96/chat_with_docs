@@ -8,6 +8,12 @@ class RagCase(BaseModel):
 class DbSummarize(BaseModel):
     db_name: str
 
+class SqlResponse(BaseModel):
+    sql: str
+
+class NaturalResponse(BaseModel):
+    text: str
+
 
 class DeleteCaseRequest(BaseModel):
     collection_names: str = Field(
