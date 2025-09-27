@@ -56,6 +56,23 @@ def create_dataset(inp_file, op_file, num_ques):
     print("Saving the dataset to a json file")
     save_to_json(data=final_data, file_path=os.path.join(DATA, op_file))
 
+
+from src_finetune.create_dataset import DatasetCreator
+
+creator = DatasetCreator()
+
+creator.create_dataset(
+    inp_file="train_spider.json", op_file="training_dataset.jsonl", num_ques=1
+)
+
+creator.create_validation_dataset(
+    inp_file="train_spider.json",
+    op_file="validation_dataset.jsonl",
+    num_ques=1,
+    validation_ratio=0.1,
+    seed=42,
+)
+
 # create_dataset(
 #     inp_file="train_spider.json", op_file="final_train_data.json", num_ques=100
 # )
