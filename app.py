@@ -9,12 +9,16 @@ import traceback
 from typing import List, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from collections import defaultdict
 
 from src.utils.logger_config import LoggerConfig
 from src.utils.models import RagCase, DbSummarize, DeleteCaseRequest
 from src.utils.vectorstore import get_vectorstore_handler
 from src.utils.summarize_db_schema import run_summarizer
-from src.utils.config import DATA,EVAL_OUTPUT
+from src.utils.config import DATA, EVAL_OUTPUT
+from src.utils.inference import Sql2Text
+from src.utils.sql_handler import DatabaseHandler
+
 from src.rag_flow import RagFlow
 
 app = FastAPI()
@@ -27,6 +31,7 @@ app.add_middleware(
 )
 
 logger = LoggerConfig().logger
+
 
 def save_to_json(data: List[Dict], file_path: str) -> None:
     with open(file_path, "w", encoding="utf-8") as f:
@@ -59,18 +64,81 @@ async def chat(lead: RagCase):
         return {"error": str(e)}
 
 
+@app.post("/get_ground_truths")
+async def get_ground_truth():
+    with open(os.path.join(DATA, "final_train_data.json"), "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    questions = defaultdict(list)
+    nl_questions = defaultdict(list)
+    ids = defaultdict(list)
+
+    for i in data:
+        questions[i.get("db_id")].append(i.get("query"))
+        nl_questions[i.get("db_id")].append(i.get("question"))
+        if i.get("id") is not None:
+            ids[i.get("id")].append(i.get("id"))
+
+    results = []
+    op_file = "results_gt.json"
+    sql2nl = Sql2Text()  # your model wrapper
+
+    for item in data:
+        key = item.get("db_id")
+        query = item.get("query")
+        question = item.get("question")
+        key_id = item.get("id")
+
+        db_hander = DatabaseHandler(db_name=key)
+
+        try:
+            sql_answer = db_hander.execute_command(query=query)
+
+            # ✅ Catch LLM / JSON parsing errors
+            try:
+                response = sql2nl.run(
+                    user_query=question, sql_answer=sql_answer, sql_query=query
+                )
+                results.append({
+                    "id": key_id,
+                    "question": question,
+                    "reply": response
+                })
+            except Exception as llm_err:
+                # If model output is invalid
+                results.append({
+                    "id": key_id,
+                    "question": question,
+                    "error": f"LLM error: {str(llm_err)}"
+                })
+
+        except Exception as db_err:
+            # If DB query itself fails
+            results.append({
+                "id": key_id,
+                "question": query,
+                "error": f"DB error: {str(db_err)}"
+            })
+
+        # ✅ Save after each iteration so partial progress is never lost
+        save_to_json(data=results, file_path=os.path.join(EVAL_OUTPUT, op_file))
+
+    return results
+
+
 @app.post("/evaluate")
 async def evaluate_prompt():
 
     # Load questions from a local JSON file
     with open(os.path.join(DATA, "final_train_data.json"), "r", encoding="utf-8") as f:
         data = json.load(f)
+    
     questions = {}
     for i in data:
         questions[i.get("id")] = i.get("question")
 
     results = []
-    op_file="results.json"
+    op_file = "results.json"
 
     # Create an async HTTP client to hit the /chat endpoint
     async with httpx.AsyncClient() as client:
@@ -84,14 +152,18 @@ async def evaluate_prompt():
                 )
                 if response.status_code == 200:
                     results.append(
-                        {"question": value, "reply": response.json().get("reply")}
+                        {
+                            "id": key,
+                            "question": value,
+                            "reply": response.json().get("reply"),
+                        }
                     )
                 else:
                     results.append({"question": value, "error": response.text})
             except Exception as e:
                 results.append({"question": value, "error": str(e)})
-        
-        save_to_json(data=results,file_path=os.path.join(EVAL_OUTPUT, op_file))
+
+        save_to_json(data=results, file_path=os.path.join(EVAL_OUTPUT, op_file))
 
     return {"evaluations": results}
 

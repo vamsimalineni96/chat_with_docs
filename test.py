@@ -3,7 +3,7 @@ import os
 from src.utils.sql_handler import DatabaseHandler
 from typing import List, Dict
 from collections import Counter
-from src.utils.config import DATA
+from src.utils.config import DATA,EVAL_OUTPUT
 
 
 def load_json(file_path):
@@ -56,7 +56,6 @@ def create_dataset(inp_file, op_file, num_ques):
     print("Saving the dataset to a json file")
     save_to_json(data=final_data, file_path=os.path.join(DATA, op_file))
 
-
 # create_dataset(
 #     inp_file="train_spider.json", op_file="final_train_data.json", num_ques=100
 # )
@@ -78,5 +77,27 @@ def create_dataset(inp_file, op_file, num_ques):
 # print(db_handler.execute_command(query))
 
 
-from utils.inference import sql_inference
+# gt_data=load_json(file_path=os.path.join(EVAL_OUTPUT,"results_gt.json"))
+# ml_data=load_json(file_path=os.path.join(EVAL_OUTPUT,"results.json"))
+# gt_errors=[]
+# ml_errors=[]
+# for i in gt_data:
+#     if i.get("error") is not None:
+#         gt_errors.append(i.get("id"))
+# for i in ml_data:
+#     if i.get("reply") is None:
+#         ml_errors.append(i.get("id"))
 
+# ml_missing=[]
+# gt_missing=[]
+# print(len(gt_errors),len(ml_errors))
+# for i in gt_errors:
+#     if i not in ml_errors:
+#         gt_missing.append(i)
+
+# for i in ml_errors:
+#     if i not in gt_errors:
+#         ml_missing.append(i)
+
+# print(gt_missing)
+# print(ml_missing)
