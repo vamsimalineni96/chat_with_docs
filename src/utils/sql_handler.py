@@ -4,7 +4,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 from src.utils.logger_config import LoggerConfig
-from src.utils.config import SPIDER_ROOT
+from src.utils.config import SPIDER_ROOT, TEST_ROOT
 
 # Initialize logger
 logger_config = LoggerConfig()
@@ -52,10 +52,14 @@ class SqlHandler:
 
 
 class DatabaseHandler:
-    def __init__(self, db_name: str = None):
+    def __init__(self, db_name: str = None, test:bool=False):
         self.db_name = db_name
         self.file_name = f"{self.db_name}.sqlite"
-        self.db_path = os.path.join(SPIDER_ROOT, self.db_name, self.file_name)
+        if test:
+            self.db_path = os.path.join(TEST_ROOT, self.db_name, self.file_name)
+        else:
+            self.db_path = os.path.join(SPIDER_ROOT, self.db_name, self.file_name)
+
 
         logger.info(f"Accessing: {self.db_path} ")
 

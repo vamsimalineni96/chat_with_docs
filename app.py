@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from collections import defaultdict
 
 from src.utils.logger_config import LoggerConfig
-from src.utils.models import RagCase, DbSummarize, DeleteCaseRequest
+from src.utils.models import RagCase, RagEval, DbSummarize, DeleteCaseRequest
 from src.utils.vectorstore import get_vectorstore_handler
 from src.utils.summarize_db_schema import run_summarizer
 from src.utils.config import DATA, EVAL_OUTPUT
@@ -20,6 +20,7 @@ from src.utils.inference import Sql2Text
 from src.utils.sql_handler import DatabaseHandler
 
 from src.rag_flow import RagFlow
+from src.eval_flow import EvalFlow
 
 app = FastAPI()
 app.add_middleware(
@@ -62,7 +63,6 @@ async def chat(lead: RagCase):
         error_trace = traceback.format_exc()
         logger.error(f"Error in chatbot_evidence: {str(e)}\n{error_trace}")
         return {"error": str(e)}
-
 
 @app.post("/get_ground_truths")
 async def get_ground_truth():
@@ -125,8 +125,90 @@ async def get_ground_truth():
 
     return results
 
+@app.post("/chat_eval")
+async def chat_eval(lead:RagEval):
+    eval_pipeline = EvalFlow()
 
-@app.post("/evaluate")
+    try:
+        logger.info("Generating the response")
+
+        try:
+            eval_pipeline.state["user_query"] = lead.question
+            eval_pipeline.state["db_schema"]= lead.db_schema
+            eval_pipeline.state["db_name"]= lead.db_name
+            
+        except Exception as e:
+            raise Exception(f"Failed to set pipeline state: {str(e)}")
+
+        # Step 3: Kick off the pipeline
+        try:
+            result = await eval_pipeline.kickoff_async()
+        except Exception as e:
+            raise Exception(f"Pipeline execution failed: {str(e)}")
+
+        return {"user_query": lead.question, "reply": result.get("sql_answer"), "generated_query":result.get("sql_query")}
+
+    except Exception as e:
+        error_trace = traceback.format_exc()
+        logger.error(f"Error in chatbot_evidence: {str(e)}\n{error_trace}")
+        return {"error": str(e)}
+
+@app.post("/llama_evaluation")
+async def run_eval():
+    # Load questions from a local JSONL file
+    data = []
+    path = os.path.join(DATA, "test_dataset_id.jsonl")
+    print(path)
+    with open(path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:  # skip empty lines
+                continue
+            try:
+                obj = json.loads(line)
+                data.append(obj)
+            except json.JSONDecodeError as e:
+                print(f"Error in line {i}: {e}")
+
+    op_file = os.path.join(EVAL_OUTPUT, "test_results.jsonl")
+
+    # Create an async HTTP client to hit the /chat_eval endpoint
+    async with httpx.AsyncClient() as client:
+        with open(op_file, "w", encoding="utf-8") as outfile:
+            for item in data:
+                try:
+                    payload = {
+                        "question": str(item.get("question")),
+                        "db_schema": str(item.get("db_schema")),
+                        "db_name": str(item.get("db_id")),
+                    }
+                    response = await client.post(
+                        "http://localhost:8000/chat_eval",
+                        json=payload,
+                        timeout=60,
+                    )
+                    if response.status_code == 200:
+                        result = {
+                            "id": item.get("id"),
+                            "question": item.get("question"),
+                            "reply": response.json().get("reply"),
+                            "generated_query": response.json().get("generated_query"),
+                        }
+                    else:
+                        result = {
+                            "question": item.get("question"),
+                            "error": response.text,
+                        }
+                except Exception as e:
+                    result = {"question": item.get("question"), "error": str(e)}
+
+                # Write each result immediately as JSONL
+                outfile.write(json.dumps(result, ensure_ascii=False) + "\n")
+                outfile.flush()
+
+    return {"evaluations_saved_to": op_file}
+
+@app.post("/evaluate_prompt")
 async def evaluate_prompt():
 
     # Load questions from a local JSON file
@@ -167,7 +249,6 @@ async def evaluate_prompt():
 
     return {"evaluations": results}
 
-
 @app.post("/summarize_db")
 async def db_summarize(lead: DbSummarize):
     try:
@@ -176,7 +257,6 @@ async def db_summarize(lead: DbSummarize):
     except Exception as e:
         logger.error("Error during summarizing db schema: {e}")
         return {"message": "Error occurred go through the logs for resolution"}
-
 
 @app.get("/view_chunks")
 async def get_case_data():
@@ -198,7 +278,6 @@ async def get_case_data():
 
     except Exception as e:
         return {"error": str(e)}
-
 
 @app.post("/delete_summary_data")
 def delete_summary_data(req: DeleteCaseRequest):

@@ -4,6 +4,10 @@ from pydantic import BaseModel, Field
 class RagCase(BaseModel):
     question: str
 
+class RagEval(BaseModel):
+    question: str
+    db_schema: str
+    db_name :str
 
 class DbSummarize(BaseModel):
     db_name: str
