@@ -6,6 +6,7 @@ import os
 import json
 import httpx
 import traceback
+import numpy as np
 from typing import List, Dict
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,6 +65,7 @@ async def chat(lead: RagCase):
         logger.error(f"Error in chatbot_evidence: {str(e)}\n{error_trace}")
         return {"error": str(e)}
 
+
 @app.post("/get_ground_truths")
 async def get_ground_truth():
     with open(os.path.join(DATA, "final_train_data.json"), "r", encoding="utf-8") as f:
@@ -99,34 +101,31 @@ async def get_ground_truth():
                 response = sql2nl.run(
                     user_query=question, sql_answer=sql_answer, sql_query=query
                 )
-                results.append({
-                    "id": key_id,
-                    "question": question,
-                    "reply": response
-                })
+                results.append({"id": key_id, "question": question, "reply": response})
             except Exception as llm_err:
                 # If model output is invalid
-                results.append({
-                    "id": key_id,
-                    "question": question,
-                    "error": f"LLM error: {str(llm_err)}"
-                })
+                results.append(
+                    {
+                        "id": key_id,
+                        "question": question,
+                        "error": f"LLM error: {str(llm_err)}",
+                    }
+                )
 
         except Exception as db_err:
             # If DB query itself fails
-            results.append({
-                "id": key_id,
-                "question": query,
-                "error": f"DB error: {str(db_err)}"
-            })
+            results.append(
+                {"id": key_id, "question": query, "error": f"DB error: {str(db_err)}"}
+            )
 
         # ✅ Save after each iteration so partial progress is never lost
         save_to_json(data=results, file_path=os.path.join(EVAL_OUTPUT, op_file))
 
     return results
 
+
 @app.post("/chat_eval")
-async def chat_eval(lead:RagEval):
+async def chat_eval(lead: RagEval):
     eval_pipeline = EvalFlow()
 
     try:
@@ -134,9 +133,9 @@ async def chat_eval(lead:RagEval):
 
         try:
             eval_pipeline.state["user_query"] = lead.question
-            eval_pipeline.state["db_schema"]= lead.db_schema
-            eval_pipeline.state["db_name"]= lead.db_name
-            
+            eval_pipeline.state["db_schema"] = lead.db_schema
+            eval_pipeline.state["db_name"] = lead.db_name
+
         except Exception as e:
             raise Exception(f"Failed to set pipeline state: {str(e)}")
 
@@ -146,12 +145,18 @@ async def chat_eval(lead:RagEval):
         except Exception as e:
             raise Exception(f"Pipeline execution failed: {str(e)}")
 
-        return {"user_query": lead.question, "reply": result.get("sql_answer"), "generated_query":result.get("sql_query")}
+        return {
+            "user_query": lead.question,
+            "reply": result.get("sql_answer"),
+            "generated_query": result.get("sql_query"),
+            "latency": result.get("latency")
+        }
 
     except Exception as e:
         error_trace = traceback.format_exc()
         logger.error(f"Error in chatbot_evidence: {str(e)}\n{error_trace}")
         return {"error": str(e)}
+
 
 @app.post("/llama_evaluation")
 async def run_eval():
@@ -171,7 +176,8 @@ async def run_eval():
                 print(f"Error in line {i}: {e}")
 
     op_file = os.path.join(EVAL_OUTPUT, "test_results.jsonl")
-
+    # Keeping track of the latencies
+    latencies = []
     # Create an async HTTP client to hit the /chat_eval endpoint
     async with httpx.AsyncClient() as client:
         with open(op_file, "w", encoding="utf-8") as outfile:
@@ -188,6 +194,7 @@ async def run_eval():
                         timeout=60,
                     )
                     if response.status_code == 200:
+                        latencies.append(response.json().get("latency"))
                         result = {
                             "id": item.get("id"),
                             "question": item.get("question"),
@@ -201,12 +208,20 @@ async def run_eval():
                         }
                 except Exception as e:
                     result = {"question": item.get("question"), "error": str(e)}
+                    latencies.append(None)
 
                 # Write each result immediately as JSONL
                 outfile.write(json.dumps(result, ensure_ascii=False) + "\n")
                 outfile.flush()
 
+    latencies = [l for l in latencies if l is not None]
+
+    logger.info(f"Avg latency: {np.mean(latencies):.2f} ms")
+    logger.info(f"P95 latency: {np.percentile(latencies, 95):.2f} ms")
+    logger.info(f"P99 latency: {np.percentile(latencies, 99):.2f} ms")
+
     return {"evaluations_saved_to": op_file}
+
 
 @app.post("/evaluate_prompt")
 async def evaluate_prompt():
@@ -214,7 +229,7 @@ async def evaluate_prompt():
     # Load questions from a local JSON file
     with open(os.path.join(DATA, "final_train_data.json"), "r", encoding="utf-8") as f:
         data = json.load(f)
-    
+
     questions = {}
     for i in data:
         questions[i.get("id")] = i.get("question")
@@ -249,6 +264,7 @@ async def evaluate_prompt():
 
     return {"evaluations": results}
 
+
 @app.post("/summarize_db")
 async def db_summarize(lead: DbSummarize):
     try:
@@ -257,6 +273,7 @@ async def db_summarize(lead: DbSummarize):
     except Exception as e:
         logger.error("Error during summarizing db schema: {e}")
         return {"message": "Error occurred go through the logs for resolution"}
+
 
 @app.get("/view_chunks")
 async def get_case_data():
@@ -278,6 +295,7 @@ async def get_case_data():
 
     except Exception as e:
         return {"error": str(e)}
+
 
 @app.post("/delete_summary_data")
 def delete_summary_data(req: DeleteCaseRequest):

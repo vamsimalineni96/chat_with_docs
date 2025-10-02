@@ -5,6 +5,7 @@ load_dotenv()
 import os
 import json
 import yaml
+import time
 from openai import OpenAI
 from pydantic import ValidationError
 
@@ -40,6 +41,7 @@ class Text2Sql:
         """Run SQL inference and return validated SQL query."""
         prompt = self.generate_prompt(user_query, schema_info)
 
+        start = time.perf_counter()
         completion = self.client.chat.completions.create(
             model="meta/llama-3.3-70b-instruct",
             messages=[{"role": "user", "content": prompt}],
@@ -48,6 +50,9 @@ class Text2Sql:
             max_tokens=1024,
             stream=False,
         )
+        end = time.perf_counter()
+
+        latency_ms = (end - start) * 1000  # Convert to milliseconds
 
         raw_output = completion.choices[0].message.content.strip()
 
@@ -59,7 +64,7 @@ class Text2Sql:
             self.logger.error(f"Invalid model output: {e}")
             raise ValueError("LLM output validation failed.") from e
 
-        return validated_output.sql
+        return validated_output.sql, latency_ms
 
 
 class Sql2Text:
