@@ -31,6 +31,13 @@ class Text2Sql:
         config_path = os.path.join(PROJECT_ROOT, "src", "configs", command_fname)
         with open(config_path, "r") as file:
             return yaml.safe_load(file)
+    
+    def clean_json_fence(self,input_str: str) -> str:
+        return (
+            input_str.strip()
+            .removeprefix("```json").removesuffix("```")
+            .strip()
+        )
 
     def generate_prompt(self, user_query: str, schema_info: str) -> str:
         """Load the prompt template and format it with user input."""
@@ -44,6 +51,7 @@ class Text2Sql:
         start = time.perf_counter()
         completion = self.client.chat.completions.create(
             model="meta/llama-3.3-70b-instruct",
+            # model="google/gemma-3-1b-it",
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             top_p=0.7,
@@ -55,6 +63,7 @@ class Text2Sql:
         latency_ms = (end - start) * 1000  # Convert to milliseconds
 
         raw_output = completion.choices[0].message.content.strip()
+        raw_output = self.clean_json_fence(input_str=raw_output)
 
         try:
             parsed_json = json.loads(raw_output)
