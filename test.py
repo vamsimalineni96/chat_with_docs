@@ -47,8 +47,8 @@ def evaluate(ml_path: str, gt_path: str):
 
         ml = ml_data[id_]
     
-        if ml.get("generated_query") is None or gt.get("sql_query") is None:
-            print(f"NoneType SQL query in id={id_}")
+        # if ml.get("generated_query") is None or gt.get("sql_query") is None:
+        #     print(f"NoneType SQL query in id={id_}")
         # Execution Match
         if compare_replies(ml["reply"], gt["reply"]):
             ex_correct += 1
@@ -69,8 +69,34 @@ def evaluate(ml_path: str, gt_path: str):
 
 if __name__ == "__main__":
     # Example usage:
-    llama_file = os.path.join(EVAL_OUTPUT, "llama_zero_shot_test_results.jsonl")
-    gemma_file = os.path.join(EVAL_OUTPUT, "gemma_zero_shot_test_results.jsonl")
+    llama0_file = os.path.join(EVAL_OUTPUT, "llama_0_shot_test_results.jsonl")
+    llama3_file = os.path.join(EVAL_OUTPUT, "llama_3_shot_test_results.jsonl")
+    llama8_file = os.path.join(EVAL_OUTPUT, "llama_8_shot_test_results.jsonl")
+    gemma0_file = os.path.join(EVAL_OUTPUT, "gemma_0_shot_test_results.jsonl")
+    gemma3_file = os.path.join(EVAL_OUTPUT, "gemma_3_shot_test_results.jsonl")
+    gemma8_file = os.path.join(EVAL_OUTPUT, "gemma_8_shot_test_results.jsonl")
     gt_file = os.path.join(EVAL_OUTPUT, "test_ground_truth.jsonl")
 
-    evaluate(ml_path=gemma_file, gt_path=gt_file)
+    print("gemma stats")
+    print("*****")
+    print("zero shot")
+    evaluate(ml_path=gemma0_file, gt_path=gt_file)
+    print("*****")
+    print("3 shot")
+    evaluate(ml_path=gemma3_file, gt_path=gt_file)
+    print("*****")
+    print("8 shot")
+    evaluate(ml_path=gemma8_file, gt_path=gt_file)
+    print()
+    print("llama stats")
+    print("*****")
+    print("zero shot")
+    evaluate(ml_path=llama0_file, gt_path=gt_file)
+    print("*****")
+    print("3 shot")
+    evaluate(ml_path=llama3_file, gt_path=gt_file)
+    print("*****")
+    print("8 shot")
+    evaluate(ml_path=llama8_file, gt_path=gt_file)
+    
+    

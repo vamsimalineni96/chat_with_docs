@@ -41,7 +41,7 @@ class Text2Sql:
 
     def generate_prompt(self, user_query: str, schema_info: str) -> str:
         """Load the prompt template and format it with user input."""
-        prompt_template = self.load_yaml_config("tsql_prompt.yaml").get("tsql_prompt")
+        prompt_template = self.load_yaml_config("tsql_prompt_8shot.yaml").get("tsql_prompt")
         return prompt_template.format(user_query=user_query, schema_info=schema_info)
 
     def run(self, user_query: str, schema_info: str) -> str:
