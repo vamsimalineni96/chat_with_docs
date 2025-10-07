@@ -63,8 +63,8 @@ class DatabaseHandler:
 
         logger.info(f"Accessing: {self.db_path} ")
 
-    def get_db_schema(self) -> Dict[str, List[str]]:
-        schema_info: Dict[str, List[str]] = {}
+    def get_db_schema(self) -> Dict[str, Dict[str, str]]:
+        schema_info: Dict[str, Dict[str, str]] = {}
         try:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
@@ -73,12 +73,15 @@ class DatabaseHandler:
                 for table in tables:
                     table_name = table[0]
                     cursor.execute(f"PRAGMA table_info({table_name});")
-                    columns = [col[1] for col in cursor.fetchall()]
-                    schema_info[table_name] = columns
-            logger.info(f"Retrieved schema for {len(schema_info)} tables.")
+                    columns = cursor.fetchall()
+                    schema_info[table_name] = {
+                        col[1]: col[2] for col in columns  # col[1]=column name, col[2]=type
+                    }
+            logger.info(f"Retrieved schema (with types) for {len(schema_info)} tables.")
         except sqlite3.Error as e:
             logger.error(f"SQLite error while fetching schema: {e}")
         return schema_info
+
 
     def get_db_schema_json(self) -> str:
         """Return schema as a JSON-formatted string."""
