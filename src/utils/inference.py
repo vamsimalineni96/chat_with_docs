@@ -15,9 +15,11 @@ from src.config import PROJECT_ROOT
 
 
 class Text2Sql:
-    def __init__(self):
+    def __init__(self,model,shot):
         # Initialize logger
         self.logger = LoggerConfig().logger
+        self.model = model
+        self.shot = shot
 
         # Initialize LLM client
         self.client = OpenAI(
@@ -41,17 +43,21 @@ class Text2Sql:
 
     def generate_prompt(self, user_query: str, schema_info: str) -> str:
         """Load the prompt template and format it with user input."""
-        prompt_template = self.load_yaml_config("tsql_prompt_8shot.yaml").get("tsql_prompt")
+        prompt_template = self.load_yaml_config(f"tsql_prompt_{self.shot}shot.yaml").get("tsql_prompt")
         return prompt_template.format(user_query=user_query, schema_info=schema_info)
 
     def run(self, user_query: str, schema_info: str) -> str:
         """Run SQL inference and return validated SQL query."""
         prompt = self.generate_prompt(user_query, schema_info)
-
+        
+        if self.model.lower().strip()=="llama":
+            llm_name = os.getenv("llama")
+        elif self.model.lower().strip()=="gemma":
+            llm_name = os.getenv("gemma")
+        
         start = time.perf_counter()
         completion = self.client.chat.completions.create(
-            model="meta/llama-3.3-70b-instruct",
-            # model="google/gemma-3-1b-it",
+            model=llm_name,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             top_p=0.7,

@@ -39,8 +39,10 @@ class EvalFlow(Flow):
 
         user_query = self.state["user_query"]
         db_schema = self.state["db_schema"]
+        llm= self.state["model"]
+        shot= self.state["shot"]
 
-        tsql = Text2Sql()
+        tsql = Text2Sql(model= llm, shot= shot)
 
         tsql_output, latency = tsql.run(user_query=user_query, schema_info=db_schema)
         logger.info(f"the tsql output is : {tsql_output}")

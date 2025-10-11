@@ -5,13 +5,18 @@ from faker import Faker
 from typing import List, Dict
 from src.utils.config import DATA
 from src.utils.sql_handler import DatabaseHandler
+from src.utils.segregate_dataset import run as segregate_test_datasets
 
 fake = Faker()
 
 
 class DatasetCreator:
-    def __init__(self, data_dir: str = DATA):
+    def __init__(
+        self, data_dir: str = DATA, fake: bool = False, segregate_test: bool = False
+    ):
         self.data_dir = data_dir
+        self.fake = fake
+        self.segregate_test = segregate_test
 
     @staticmethod
     def load_json(file_path: str) -> List[Dict]:
@@ -26,7 +31,10 @@ class DatasetCreator:
 
     def normalize_dtype(self, dtype: str) -> str:
         dtype = dtype.strip().upper()
-        if any(x in dtype for x in ["INT", "NUMBER", "SMALLINT", "BIGINT", "MEDIUMINT", "TINYINT"]):
+        if any(
+            x in dtype
+            for x in ["INT", "NUMBER", "SMALLINT", "BIGINT", "MEDIUMINT", "TINYINT"]
+        ):
             return "INT"
         elif any(x in dtype for x in ["REAL", "FLOAT", "DOUBLE", "DECIMAL", "NUMERIC"]):
             return "REAL"
@@ -63,23 +71,31 @@ class DatasetCreator:
             return "NULL"
 
     # --- Convert schema to SQL (CREATE + INSERT) ---
-    def schema_to_sql(self,schema: dict, rows_per_table: int = 3):
+    def schema_to_sql(self, schema: dict, rows_per_table: int = 1):
         sql_statements = []
 
         for table_name, columns in schema.items():
             # CREATE TABLE
-            cols_def = ", ".join([f"{col} {self.normalize_dtype(dtype)}" for col, dtype in columns.items()])
+            cols_def = ", ".join(
+                [
+                    f"{col} {self.normalize_dtype(dtype)}"
+                    for col, dtype in columns.items()
+                ]
+            )
             create_stmt = f"CREATE TABLE {table_name} ({cols_def});"
             sql_statements.append(create_stmt)
 
             # INSERT INTO
-            # col_names = ", ".join(columns.keys())
-            # values_list = []
-            # for _ in range(rows_per_table):
-            #     vals = [self.generate_sample_value(dtype) for dtype in columns.values()]
-            #     values_list.append(f"({', '.join(vals)})")
-            # insert_stmt = f"INSERT INTO {table_name} ({col_names}) VALUES {', '.join(values_list)};"
-            # sql_statements.append(insert_stmt)
+            if self.fake:
+                col_names = ", ".join(columns.keys())
+                values_list = []
+                for _ in range(rows_per_table):
+                    vals = [
+                        self.generate_sample_value(dtype) for dtype in columns.values()
+                    ]
+                    values_list.append(f"({', '.join(vals)})")
+                insert_stmt = f"INSERT INTO {table_name} ({col_names}) VALUES {', '.join(values_list)};"
+                sql_statements.append(insert_stmt)
 
         return " ".join(sql_statements)
 
@@ -91,14 +107,17 @@ class DatasetCreator:
         train_data = []
 
         # Prepare dataset with SQL schema
-        for c_instance in complete_data:
+        for i, c_instance in enumerate(complete_data):
             db_handler = DatabaseHandler(c_instance.get("db_id"), test=test)
             train_data.append(
                 {
+                    "id": i,
                     "db_id": c_instance.get("db_id"),
                     "query": c_instance.get("query"),
                     "question": c_instance.get("question"),
-                    "db_schema": self.schema_to_sql(json.loads(db_handler.get_db_schema_json()))
+                    "db_schema": self.schema_to_sql(
+                        json.loads(db_handler.get_db_schema_json())
+                    ),
                 }
             )
 
@@ -108,9 +127,15 @@ class DatasetCreator:
         self.save_to_jsonl(data=train_data, file_path=output_path)
         print(f"Dataset saved to {output_path}")
 
+        if self.segregate_test:
+            print("Segregating the test dataset based on complexity")
+            segregate_test_datasets()
+
 
 # Example usage:
-# creator = DatasetCreator()
+# creator=DatasetCreator(fake=True)
 # creator.create_dataset(
-#     inp_file="train_spider.json",
-#     op_file="training_dataset_final.jsonl")
+#     inp_file="test.json",
+#     op_file="test_dataset_db_id.jsonl",
+#     test=True
+# )

@@ -99,11 +99,15 @@
 #     print("8 shot")
 #     evaluate(ml_path=llama8_file, gt_path=gt_file)
 
-from create_dataset import DatasetCreator
-creator=DatasetCreator()
+# from create_dataset import DatasetCreator
 
-creator.create_dataset(
-    inp_file="train_spider.json",
-    op_file="training_dataset_nodb_final.jsonl"
-    ,test=False
-)
+# creator=DatasetCreator(fake=True)
+# creator.create_dataset(
+#     inp_file="test.json",
+#     op_file="test_dataset_db_id.jsonl",
+#     test=True
+# )
+
+from src.utils.segregate_dataset import generate_ground_truths
+
+generate_ground_truths()

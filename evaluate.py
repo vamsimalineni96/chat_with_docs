@@ -1,6 +1,6 @@
 import json
 import os
-from src.utils.config import EVAL_OUTPUT
+from src.utils.config import EVAL_OUTPUT, SEGREGATED_DATASET ,FINETUNE_OUTPUTS
 
 
 import json
@@ -36,6 +36,7 @@ def compare_sql_structures(sql1: str, sql2: str) -> bool:
     except Exception:
         return False
 
+
 def evaluate(ml_path: str, gt_path: str):
     ml_data = load_jsonl(ml_path)
     gt_data = load_jsonl(gt_path)
@@ -48,7 +49,7 @@ def evaluate(ml_path: str, gt_path: str):
             continue
 
         ml = ml_data[id_]
-    
+
         if ml.get("generated_query") is None or gt.get("sql_query") is None:
             print(f"NoneType SQL query in id={id_}")
         # Execution Match
@@ -70,9 +71,19 @@ def evaluate(ml_path: str, gt_path: str):
 
 
 if __name__ == "__main__":
+    comp_type = "medium"
+    shot = 0
     # Example usage:
-    llama_file = os.path.join(EVAL_OUTPUT, "llama_zero_shot_test_results.jsonl")
-    gemma_file = os.path.join(EVAL_OUTPUT, "gemma_zero_shot_test_results.jsonl")
-    gt_file = os.path.join(EVAL_OUTPUT, "test_ground_truth.jsonl")
+    
+    gt_file = os.path.join(SEGREGATED_DATASET, f"test_ground_truth_{comp_type}.jsonl")
 
-    evaluate(ml_path=gemma_file, gt_path=gt_file)
+    llama_file = os.path.join(
+        EVAL_OUTPUT, f"llama_{shot}_shot_test_results_{comp_type}.jsonl"
+    )
+    gemma_file = os.path.join(
+        EVAL_OUTPUT, f"gemma_{shot}_shot_test_results_{comp_type}.jsonl"
+    )
+    fgemma_file = os.path.join(
+        FINETUNE_OUTPUTS, f"fgemma_results_{comp_type}.jsonl"
+    )
+    evaluate(ml_path=fgemma_file, gt_path=gt_file)
