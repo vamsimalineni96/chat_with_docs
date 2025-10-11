@@ -1,6 +1,6 @@
 import json
 import os
-from src.utils.config import EVAL_OUTPUT, SEGREGATED_DATASET ,FINETUNE_OUTPUTS
+from src.utils.config import EVAL_OUTPUT, SEGREGATED_DATASET, FINETUNE_OUTPUTS
 
 
 import json
@@ -71,19 +71,18 @@ def evaluate(ml_path: str, gt_path: str):
 
 
 if __name__ == "__main__":
-    comp_type = "medium"
     shot = 0
+    comp_type = "hard"
+
     # Example usage:
-    
+
     gt_file = os.path.join(SEGREGATED_DATASET, f"test_ground_truth_{comp_type}.jsonl")
 
-    llama_file = os.path.join(
+    llama = os.path.join(
         EVAL_OUTPUT, f"llama_{shot}_shot_test_results_{comp_type}.jsonl"
     )
-    gemma_file = os.path.join(
+    gemma = os.path.join(
         EVAL_OUTPUT, f"gemma_{shot}_shot_test_results_{comp_type}.jsonl"
     )
-    fgemma_file = os.path.join(
-        FINETUNE_OUTPUTS, f"fgemma_results_{comp_type}.jsonl"
-    )
-    evaluate(ml_path=fgemma_file, gt_path=gt_file)
+    fgemma = os.path.join(FINETUNE_OUTPUTS, f"fgemma_results_{comp_type}.jsonl")
+    evaluate(ml_path=gemma, gt_path=gt_file)

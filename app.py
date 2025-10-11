@@ -262,42 +262,39 @@ async def run_nim_inference():
 
 # Endpoint to execute the generated queries from finetuned gemma
 @app.post("/finetune_execute_queries")
-async def execute_finetune_generated_queries():
-    complexity_type = ["easy", "medium", "hard"]
+async def execute_finetune_generated_queries(comp_type:str):
+    data = []
+    path = os.path.join(FINETUNE_INPUTS, f"fgemma_results_{comp_type}.jsonl")
+    print(path)
+    with open(path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:  # skip empty lines
+                continue
+            try:
+                obj = json.loads(line)
+                data.append(obj)
+            except json.JSONDecodeError as e:
+                print(f"Error in line {i}: {e}")
 
-    for comp_type in complexity_type:
-        data = []
-        path = os.path.join(FINETUNE_INPUTS, f"fgemma_results_{comp_type}.jsonl")
-        print(path)
-        with open(path, "r", encoding="utf-8") as f:
-            for i, line in enumerate(f, start=1):
-                line = line.strip()
-                if not line:  # skip empty lines
-                    continue
-                try:
-                    obj = json.loads(line)
-                    data.append(obj)
-                except json.JSONDecodeError as e:
-                    print(f"Error in line {i}: {e}")
+    op_file = os.path.join(FINETUNE_OUTPUTS, f"fgemma_results_{comp_type}.jsonl")
+    with open(op_file, "w", encoding="utf-8") as outfile:
+        for datapoint in data:
+            test_database_handler = DatabaseHandler(
+                db_name=datapoint.get("db_id"), test=True
+            )
+            generated_query = datapoint.get("generated_query")
+            reply = test_database_handler.execute_command(query=generated_query)
 
-        op_file = os.path.join(FINETUNE_OUTPUTS, f"fgemma_results_{comp_type}.jsonl")
-        with open(op_file, "w", encoding="utf-8") as outfile:
-            for datapoint in data:
-                test_database_handler = DatabaseHandler(
-                    db_name=datapoint.get("db_id"), test=True
-                )
-                generated_query = datapoint.get("generated_query")
-                reply = test_database_handler.execute_command(query=generated_query)
-
-                result = {
-                    "id": datapoint.get("id"),
-                    "question": datapoint.get("question"),
-                    "reply": reply,
-                    "generated_query": datapoint.get("generated_query"),
-                }
-                outfile.write(json.dumps(result, ensure_ascii=False) + "\n")
-                outfile.flush()
-
+            result = {
+                "id": datapoint.get("id"),
+                "question": datapoint.get("question"),
+                "reply": reply,
+                "generated_query": datapoint.get("generated_query"),
+            }
+            outfile.write(json.dumps(result, ensure_ascii=False) + "\n")
+            outfile.flush()
+    return{"message":"Completed"}
 
 # @app.post("/evaluate_prompt")
 # async def evaluate_prompt():
