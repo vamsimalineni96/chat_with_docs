@@ -37,7 +37,7 @@ def compare_sql_structures(sql1: str, sql2: str) -> bool:
         return False
 
 
-def evaluate(ml_path: str, gt_path: str):
+def evaluate(ml_path: str, gt_path: str, comp_type: str, model: str):
     ml_data = load_jsonl(ml_path)
     gt_data = load_jsonl(gt_path)
 
@@ -64,6 +64,8 @@ def evaluate(ml_path: str, gt_path: str):
         if compare_sql_structures(ml["generated_query"], gt["sql_query"]):
             struct_correct += 1
 
+    print(f"Model: {model}")
+    print(f"Complexity: {comp_type}")
     print(f"Total samples: {total}")
     print(f"Execution Accuracy (EX): {ex_correct / total:.2%}")
     print(f"String Match (SM): {sm_correct / total:.2%}")
@@ -71,10 +73,14 @@ def evaluate(ml_path: str, gt_path: str):
 
 
 if __name__ == "__main__":
+    gmodel = "gemma 3 1b it"
+    qmodel = "qwen 2.5 7b instruct"
+    lmodel = "llama 3.3 70b"
+
     shot = 0
     comp_type = "hard"
-
-    # Example usage:
+    Model = qmodel
+    
 
     gt_file = os.path.join(SEGREGATED_DATASET, f"test_ground_truth_{comp_type}.jsonl")
 
@@ -84,5 +90,8 @@ if __name__ == "__main__":
     gemma = os.path.join(
         EVAL_OUTPUT, f"gemma_{shot}_shot_test_results_{comp_type}.jsonl"
     )
-    fgemma = os.path.join(FINETUNE_OUTPUTS, f"fgemma_results_{comp_type}.jsonl")
-    evaluate(ml_path=gemma, gt_path=gt_file)
+    fgemma = os.path.join(FINETUNE_OUTPUTS, f"f{gmodel}_results_{comp_type}.jsonl")
+
+    fqwen = os.path.join(FINETUNE_OUTPUTS, f"f{qmodel}_results_{comp_type}.jsonl")
+
+    evaluate(ml_path=fqwen, gt_path=gt_file, comp_type=comp_type, model=Model)
