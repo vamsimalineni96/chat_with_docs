@@ -6,9 +6,9 @@ from typing import List, Dict
 
 from faker import Faker
 
-from src.utils.config import DATA
-from src.utils.sql_handler import DatabaseHandler
-from src.utils.segregate_dataset import run as segregate_test_datasets
+from prune_src.utils.config import DATA
+from prune_src.utils.sql_handler import DatabaseHandler
+from prune_src.utils.segregate_dataset import run as segregate_test_datasets
 
 fake = Faker()
 
@@ -146,8 +146,7 @@ class DatasetCreator:
                 values_list = []
                 for _ in range(rows_per_table):
                     vals = [
-                        self.generate_sample_value(dtype)
-                        for dtype in columns.values()
+                        self.generate_sample_value(dtype) for dtype in columns.values()
                     ]
                     values_list.append(f"({', '.join(vals)})")
                 insert_stmt = (
@@ -157,7 +156,6 @@ class DatasetCreator:
                 sql_statements.append(insert_stmt)
 
         return " ".join(sql_statements)
-
 
     def create_dataset(self, inp_file: str, op_file: str, test: bool = False):
         file_path = os.path.join(self.data_dir, inp_file)
@@ -197,7 +195,7 @@ class DatasetCreator:
 
 # Example usage (you can remove or adapt this part as needed)
 if __name__ == "__main__":
-    creator = DatasetCreator(fake=False)
+    creator = DatasetCreator(fake=False, segregate_test=True)
     creator.create_dataset(
         inp_file="test.json",
         op_file="test_dataset_db_id_test.jsonl",

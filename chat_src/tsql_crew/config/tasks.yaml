@@ -1,0 +1,18 @@
+nl_to_sql_task:
+  description: >
+    - Take the user query: {user_query}
+    - Analyze intent and convert into an SQL query
+    - SQL must follow SQLite syntax
+    - SQL must be based only on schema: {schema_info}
+    - Do not assume any columns or tables that don’t exist
+    - For example:
+      "SELECT * FROM crime_scene_report WHERE date = '20180115';"
+      
+  expected_output: >
+    - Return a JSON object containing the generated SQL query
+      {
+        "sql": "..."
+      }
+  agent: "NL2SQL_Agent"
+  async_execution: False
+

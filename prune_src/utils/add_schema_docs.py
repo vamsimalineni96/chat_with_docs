@@ -1,7 +1,7 @@
 import re, json
-from src.utils.config import SCHEMA_DOCS
-from src.utils.vectorstore import get_vectorstore_handler
-from src.utils.logger_config import LoggerConfig
+from prune_src.utils.config import SCHEMA_DOCS
+from prune_src.utils.vectorstore import get_vectorstore_handler
+from prune_src.utils.logger_config import LoggerConfig
 
 # Initialize the logger
 logger_config = LoggerConfig()

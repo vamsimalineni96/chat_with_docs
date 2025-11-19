@@ -213,3 +213,4 @@ questions.json
 sakila_*.db
 spider*/
 chroma_*/
+test_datasets/

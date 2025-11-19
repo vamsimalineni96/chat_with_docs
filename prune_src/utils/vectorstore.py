@@ -1,9 +1,9 @@
 import chromadb
 from chromadb.config import Settings
-from src.utils.embedder import EmbeddingHandler
+from prune_src.utils.embedder import EmbeddingHandler
 import uuid
 
-from src.utils.logger_config import LoggerConfig
+from prune_src.utils.logger_config import LoggerConfig
 
 
 # Initialize the logger

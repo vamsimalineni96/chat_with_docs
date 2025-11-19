@@ -4,7 +4,7 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Tuple, Any
 
-from src.utils.config import TEST_DATASET, DB_DOCS
+from prune_src.utils.config import TEST_DATASET, DB_DOCS
 
 
 # -----------------------------

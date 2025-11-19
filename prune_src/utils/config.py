@@ -11,7 +11,7 @@ DB_DOCS = os.path.join(DATA, "db_docs")
 SCHEMA_DOCS = os.path.join(DB_DOCS, "tables_with_types_and_keys_by_db.jsonl")
 
 TRAIN_DATASET = os.path.join(DATA, "train_dataset_nodb_id.jsonl")
-TEST_DATASET = os.path.join(DATA, "test_dataset_db_id_test.jsonl")
+TEST_DATASET = os.path.join(DATA, "test_nodb.jsonl")
 
 SEGREGATED_DATASET = "test_datasets"
 

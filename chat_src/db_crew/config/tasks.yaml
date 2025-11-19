@@ -1,0 +1,26 @@
+db_task:
+  description: >
+    You are given the complete schema of a SQLite database.
+    Generate a precise, factual summary describing the purpose and contents of the database.
+    The summary must be strictly grounded in the schema—do NOT invent information.
+
+    Schema:
+    {db_schema}
+
+    Instructions:
+    1. Identify the main domain of the database (e.g., sports, retail, education, etc.).
+    2. List the main entities represented by the tables.
+    3. Describe the key relationships between entities (foreign keys, one-to-many, etc.).
+    4. Highlight important attributes that define each entity (important columns).
+    5. Keep the summary concise (150–250 words) but detailed enough so a language model
+    could choose this database when given a natural-language question.
+
+  expected_output: >
+    - Return ONLY a valid JSON object matching this structure:
+      {
+        "Domain": "<one short phrase>",
+        "Summary": "<one or two detailed paragraphs summarizing the database contents and relationships, escape newlines as \\n>"
+      }
+
+  agent: "Db_Agent"
+  async_execution: False

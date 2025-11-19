@@ -1,8 +1,8 @@
 import json
 import os
 from collections import Counter
-from src.utils.config import SEGREGATED_DATASET, DATA, TEST_DATASET
-from src.utils.sql_handler import DatabaseHandler
+from chat_src.utils.config import SEGREGATED_DATASET, DATA, TEST_DATASET
+from chat_src.utils.sql_handler import DatabaseHandler
 
 AGG_FUNCS = {"count", "sum", "avg", "min", "max"}
 SET_OPS = {"union", "intersect", "except"}

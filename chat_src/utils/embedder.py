@@ -2,12 +2,11 @@ import requests
 import json
 import os
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.utils.logger_config import LoggerConfig
+from chat_src.utils.logger_config import LoggerConfig
 
 # Initialize the logger
 logger_config = LoggerConfig()
 logger = logger_config.logger
-from openai import OpenAI
 
 
 class EmbeddingHandler:
@@ -23,18 +22,16 @@ class EmbeddingHandler:
 
     def get_embedding(self, text: str):
         """Fetches embeddings for the given text from NVIDIA NIM embedding model."""
-        client = OpenAI(
-            api_key=self.NVIDIA_NIM_API_KEY, base_url=self.NVIDIA_EMBEDDING_ENDPOINT
-        )
+        payload = {"model": self.NVIDIA_EMBEDDING_MODEL, "input": text}
 
         try:
-            response = client.embeddings.create(
-                input=[text],
-                model=self.NVIDIA_EMBEDDING_MODEL,
-                encoding_format="float",
-                extra_body={"input_type": "query", "truncate": "NONE"},
+            response = requests.post(
+                self.NVIDIA_EMBEDDING_ENDPOINT, headers=self.headers, json=payload
             )
-            embedding = response.data[0].embedding
+            response.raise_for_status()  # Raises HTTP errors if any
+
+            json_response = json.loads(response.text)
+            embedding = json_response.get("data", [{}])[0].get("embedding", [])
 
             if not embedding:
                 logger.warning("Received empty embedding for input text.")

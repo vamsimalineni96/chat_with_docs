@@ -3,8 +3,8 @@ import json
 import sqlite3
 from typing import Any, Dict, List, Optional
 
-from src.utils.logger_config import LoggerConfig
-from src.utils.config import SPIDER_ROOT, TEST_ROOT
+from prune_src.utils.logger_config import LoggerConfig
+from prune_src.utils.config import SPIDER_ROOT, TEST_ROOT
 
 # Initialize logger
 logger_config = LoggerConfig()
