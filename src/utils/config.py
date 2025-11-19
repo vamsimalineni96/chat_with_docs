@@ -1,12 +1,17 @@
-SPIDER_ROOT='spider_data\database'
-TEST_ROOT=r'spider_data\test_database'
+import os
+from pathlib import Path
 
-DATA='spider_data'
-EVAL_OUTPUT='eval_outputs'
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
-TRAIN_DATASET="train_dataset_nodb_id.jsonl"
-TEST_DATASET="test_dataset_nodb_id.jsonl"
-SEGREGATED_DATASET="test_datasets"
+SPIDER_ROOT = os.path.join(PROJECT_ROOT, "spider_data", "database")
+TEST_ROOT = os.path.join(PROJECT_ROOT, "spider_data", "test_database")
 
-FINETUNE_INPUTS="fine_tune_input"
-FINETUNE_OUTPUTS="fine_tune_output"
+DATA = os.path.join(PROJECT_ROOT, "spider_data")
+DB_DOCS = os.path.join(DATA, "db_docs")
+SCHEMA_DOCS = os.path.join(DB_DOCS, "tables_with_types_and_keys_by_db.jsonl")
+
+TRAIN_DATASET = os.path.join(DATA, "train_dataset_nodb_id.jsonl")
+TEST_DATASET = os.path.join(DATA, "test_dataset_db_id_test.jsonl")
+
+SEGREGATED_DATASET = "test_datasets"
+
