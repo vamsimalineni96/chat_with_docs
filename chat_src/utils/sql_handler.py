@@ -4,7 +4,7 @@ import sqlite3
 from typing import Any, Dict, List, Optional
 
 from chat_src.utils.logger_config import LoggerConfig
-from chat_src.utils.config import SPIDER_ROOT, TEST_ROOT
+from chat_src.utils.config import TRAIN_ROOT, TEST_ROOT
 
 # Initialize logger
 logger_config = LoggerConfig()
@@ -52,14 +52,13 @@ class SqlHandler:
 
 
 class DatabaseHandler:
-    def __init__(self, db_name: str = None, test:bool=False):
+    def __init__(self, db_name: str = None, test: bool = False):
         self.db_name = db_name
         self.file_name = f"{self.db_name}.sqlite"
         if test:
             self.db_path = os.path.join(TEST_ROOT, self.db_name, self.file_name)
         else:
-            self.db_path = os.path.join(SPIDER_ROOT, self.db_name, self.file_name)
-
+            self.db_path = os.path.join(TRAIN_ROOT, self.db_name, self.file_name)
 
         logger.info(f"Accessing: {self.db_path} ")
 
@@ -75,13 +74,13 @@ class DatabaseHandler:
                     cursor.execute(f"PRAGMA table_info({table_name});")
                     columns = cursor.fetchall()
                     schema_info[table_name] = {
-                        col[1]: col[2] for col in columns  # col[1]=column name, col[2]=type
+                        col[1]: col[2]
+                        for col in columns  # col[1]=column name, col[2]=type
                     }
             logger.info(f"Retrieved schema (with types) for {len(schema_info)} tables.")
         except sqlite3.Error as e:
             logger.error(f"SQLite error while fetching schema: {e}")
         return schema_info
-
 
     def get_db_schema_json(self) -> str:
         """Return schema as a JSON-formatted string."""

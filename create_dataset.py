@@ -194,10 +194,32 @@ class DatasetCreator:
 
 
 # Example usage (you can remove or adapt this part as needed)
+# Run python create_dataset.py --train ==> this creates the training dataset
+# Run pyhton create_dataset.py --test --segregate ==> this creates and segregates the test dataset
 if __name__ == "__main__":
-    creator = DatasetCreator(fake=False, segregate_test=False)
-    creator.create_dataset(
-        inp_file="train_spider.json",
-        op_file="train_dataset_nodb_id_test.jsonl",
-        test=False,
-    )
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Dataset Creator")
+    parser.add_argument('--train', action='store_true', help="Create training dataset")
+    parser.add_argument('--test', action='store_true', help="Create test dataset")
+    parser.add_argument('--segregate', action="store_true", help="Segregate test dataset after creation")
+    parser.add_argument('--fake', action='store_true', help="Include fake rows in generated SQL")
+
+    args = parser.parse_args()
+
+    creator = DatasetCreator(fake=args.fake, segregate_test=args.segregate)
+
+    if args.train:
+        creator.create_dataset(
+            inp_file="train_spider.json",
+            op_file="train_dataset_nodb.jsonl",
+            test=False
+        )
+    elif args.test:
+        creator.create_dataset(
+            inp_file="test.json",
+            op_file="test_dataset_nodb.jsonl",
+            test=True
+        )
+    else:
+        parser.print_help()

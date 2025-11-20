@@ -8,7 +8,7 @@ import traceback
 import numpy as np 
 
 from prune_src.utils.inference import SchemaPrune
-from prune_src.utils.config import SEGREGATED_DATASET
+from prune_src.utils.config import SEGREGATED_DATASET, TRAIN_DATASET, PRUNE_TRAIN_DATASET
 
 from chat_src.eval_flow import EvalFlow
 from chat_src.utils.logger_config import LoggerConfig
@@ -32,8 +32,8 @@ def read_jsonl(path: str):
                 print(f"[WARN] JSON error on line {i}: {e}")
 
 
-@app.post("/prune_schema")
-async def prune_schema(model: str, comp: str):
+@app.post("/prune_schema_test")
+async def prune_schema_test(model: str, comp: str):
     schema_pruner = SchemaPrune(model=model)
 
     input_path = os.path.join(SEGREGATED_DATASET, f"{comp}.jsonl")
@@ -76,6 +76,48 @@ async def prune_schema(model: str, comp: str):
         "message": "Pruning completed",
         "num_examples": num_processed,
         "output_path": output_path,
+    }
+
+@app.post("/prune_schema_train")
+async def prune_schema_train(model: str):
+    schema_pruner = SchemaPrune(model=model)
+
+    num_processed = 0
+    with open(PRUNE_TRAIN_DATASET, "w", encoding="utf-8") as out_f:
+        for obj in read_jsonl(path=TRAIN_DATASET):
+            id = obj.get("id")
+            db_id = obj.get("db_id")
+            question = obj.get("question")
+            db_schema = obj.get("db_schema")
+            query = obj.get("query")
+
+            pruned_schema, _ = schema_pruner.run(
+                user_query=question,
+                schema_info=db_schema,
+            )
+
+            # Whatever structure you want to save per line
+            out_obj = {
+                "id": id,
+                "db_id": db_id,
+                "question": question,
+                "db_schema": pruned_schema,
+                "query": query,
+            }
+            # --- write to JSONL *every iteration* ---
+            with open(PRUNE_TRAIN_DATASET, "a", encoding="utf-8") as f:
+                f.write(json.dumps(out_obj, ensure_ascii=False) + "\n")
+                # Optional: force flush to disk for safety
+                f.flush()
+                os.fsync(f.fileno())
+            # ----------------------------------------
+
+            num_processed += 1
+
+    return {
+        "message": "Pruning completed",
+        "num_examples": num_processed,
+        "output_path": PRUNE_TRAIN_DATASET,
     }
 
 
