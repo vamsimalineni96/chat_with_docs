@@ -195,9 +195,9 @@ class DatasetCreator:
 
 # Example usage (you can remove or adapt this part as needed)
 if __name__ == "__main__":
-    creator = DatasetCreator(fake=False, segregate_test=True)
+    creator = DatasetCreator(fake=False, segregate_test=False)
     creator.create_dataset(
-        inp_file="test.json",
-        op_file="test_dataset_db_id_test.jsonl",
-        test=True,
+        inp_file="train_spider.json",
+        op_file="train_dataset_nodb_id_test.jsonl",
+        test=False,
     )

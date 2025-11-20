@@ -116,90 +116,86 @@ async def chat_eval(lead: RagEval):
 
 
 @app.post("/nim_inference")
-async def run_nim_inference(comp:str, model: str):
-    comp_types = [comp]
-    shots = [0]
-    models = [model]
+async def run_nim_inference(comp_type:str, model: str):
+    shot = 0
+    os.makedirs(EVAL_OUTPUT, exist_ok=True)
 
-    for comp_type in comp_types:
-        for shot in shots:
-            for model in models:
-                if comp_type == "easy":
-                    path = os.path.join(SEGREGATED_DATASET, "easy_pruned_llama.jsonl")
-                    print(path)
-                if comp_type == "medium":
-                    path = os.path.join(SEGREGATED_DATASET, "medium_pruned_llama.jsonl")
-                    print(path)
-                if comp_type == "hard":
-                    path = os.path.join(SEGREGATED_DATASET, "hard_pruned_llama.jsonl")
-                    print(path)
+    if comp_type == "easy":
+        path = os.path.join(SEGREGATED_DATASET, "easy_pruned_llama.jsonl")
+        print(path)
+    if comp_type == "medium":
+        path = os.path.join(SEGREGATED_DATASET, "medium_pruned_llama.jsonl")
+        print(path)
+    if comp_type == "hard":
+        path = os.path.join(SEGREGATED_DATASET, "hard_pruned_llama.jsonl")
+        print(path)
 
-                # Load questions from a local JSONL file
-                data = []
-                with open(path, "r", encoding="utf-8") as f:
-                    for i, line in enumerate(f, start=1):
-                        line = line.strip()
-                        if not line:  # skip empty lines
-                            continue
-                        try:
-                            obj = json.loads(line)
-                            data.append(obj)
-                        except json.JSONDecodeError as e:
-                            print(f"Error in line {i}: {e}")
+    # Load questions from a local JSONL file
+    data = []
+    with open(path, "r", encoding="utf-8") as f:
+        for i, line in enumerate(f, start=1):
+            line = line.strip()
+            if not line:  # skip empty lines
+                continue
+            try:
+                obj = json.loads(line)
+                data.append(obj)
+            except json.JSONDecodeError as e:
+                print(f"Error in line {i}: {e}")
 
-                op_file = os.path.join(
-                    EVAL_OUTPUT, f"{model}_{shot}_shot_test_results_{comp_type}.jsonl"
-                )
-                # Keeping track of the latencies
-                latencies = []
-                # Create an async HTTP client to hit the /chat_eval endpoint
-                async with httpx.AsyncClient() as client:
-                    with open(op_file, "w", encoding="utf-8") as outfile:
-                        for item in data:
-                            try:
-                                payload = {
-                                    "question": str(item.get("question")),
-                                    "db_schema": str(item.get("db_schema")),
-                                    "db_name": str(item.get("db_id")),
-                                    "model": model,
-                                    "shot": shot,
-                                }
-                                response = await client.post(
-                                    "http://localhost:8000/chat_eval",
-                                    json=payload,
-                                    timeout=60,
-                                )
-                                if response.status_code == 200:
-                                    latencies.append(response.json().get("latency"))
-                                    result = {
-                                        "id": item.get("id"),
-                                        "question": item.get("question"),
-                                        "reply": response.json().get("reply"),
-                                        "generated_query": response.json().get(
-                                            "generated_query"
-                                        ),
-                                    }
-                                else:
-                                    result = {
-                                        "question": item.get("question"),
-                                        "error": response.text,
-                                    }
-                            except Exception as e:
-                                result = {
-                                    "question": item.get("question"),
-                                    "error": str(e),
-                                }
-                                latencies.append(None)
+    op_file = os.path.join(
+        EVAL_OUTPUT, f"{model}_{shot}_shot_test_results_{comp_type}.jsonl"
+    )
+    # Keeping track of the latencies
+    latencies = []
+    # Create an async HTTP client to hit the /chat_eval endpoint
+    async with httpx.AsyncClient() as client:
+        with open(op_file, "w", encoding="utf-8") as outfile:
+            for item in data:
+                try:
+                    payload = {
+                        "question": str(item.get("question")),
+                        "db_schema": str(item.get("db_schema")),
+                        "db_name": str(item.get("db_id")),
+                        "model": model,
+                        "shot": shot,
+                    }
+                    response = await client.post(
+                        "http://localhost:8000/chat_eval",
+                        json=payload,
+                        timeout=60,
+                    )
+                    if response.status_code == 200:
+                        latencies.append(response.json().get("latency"))
+                        result = {
+                            "id": item.get("id"),
+                            "question": item.get("question"),
+                            "reply": response.json().get("reply"),
+                            "generated_query": response.json().get(
+                                "generated_query"
+                            ),
+                        }
+                    else:
+                        result = {
+                            "question": item.get("question"),
+                            "error": response.text,
+                        }
+                except Exception as e:
+                    result = {
+                        "question": item.get("question"),
+                        "error": str(e),
+                    }
+                    latencies.append(None)
 
-                            # Write each result immediately as JSONL
-                            outfile.write(json.dumps(result, ensure_ascii=False) + "\n")
-                            outfile.flush()
+                # Write each result immediately as JSONL
+                outfile.write(json.dumps(result, ensure_ascii=False) + "\n")
+                outfile.flush()
 
-                latencies = [l for l in latencies if l is not None]
+    latencies = [l for l in latencies if l is not None]
 
-                logger.info(f"{comp_type} Avg latency: {np.mean(latencies):.2f} ms")
-                logger.info(f"{comp_type} P95 latency: {np.percentile(latencies, 95):.2f} ms")
-                logger.info(f"{comp_type} P99 latency: {np.percentile(latencies, 99):.2f} ms")
+    logger.info(f"{comp_type} Avg latency: {np.mean(latencies):.2f} ms")
+    logger.info(f"{comp_type} P95 latency: {np.percentile(latencies, 95):.2f} ms")
+    logger.info(f"{comp_type} P99 latency: {np.percentile(latencies, 99):.2f} ms")
 
     return {"evaluations_saved_to": op_file}
 
