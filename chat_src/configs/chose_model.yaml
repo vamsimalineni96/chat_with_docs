@@ -1,8 +1,0 @@
-gpt4:
-  choice: "no"
-
-llama:
-  choice: "yes"
-
-on_prem:
-  choice: "no"
