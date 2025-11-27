@@ -1,9 +1,5 @@
 from openai import OpenAI
-from utils.config import (
-    NVIDIA_BASE_URL,
-    NVIDIA_API_KEY,
-    EMBED_MODEL
-)
+from src.utils.config import NVIDIA_BASE_URL, NVIDIA_API_KEY, EMBED_MODEL
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
@@ -13,9 +9,7 @@ class EmbeddingHandler:
 
     def get_embedding(self, text: str):
 
-        client = OpenAI(
-            api_key=NVIDIA_API_KEY, base_url=NVIDIA_BASE_URL
-        )
+        client = OpenAI(api_key=NVIDIA_API_KEY, base_url=NVIDIA_BASE_URL)
 
         response = client.embeddings.create(
             input=[text],
@@ -27,7 +21,6 @@ class EmbeddingHandler:
         embedding = response.data[0].embedding
         print("Successfully retrieved embedding of length %d", len(embedding))
         return embedding
-
 
     def get_document_embeddings(
         self, chunk_size: int, chunk_overlap: int, long_text: str

@@ -3,8 +3,8 @@ from typing import List, Dict, Any, Optional
 from pymilvus import MilvusClient, DataType
 
 import uuid
-import utils.config as config
-from utils.embedder import EmbeddingHandler
+from src.utils import config
+from src.utils.services.embedder import EmbeddingHandler
 
 
 class MilvusStoreHandler:

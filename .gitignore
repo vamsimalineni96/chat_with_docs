@@ -136,8 +136,9 @@ dmypy.json
 
 # Cython debug symbols
 cython_debug/
-
+.vscode/
 etcd_data/
 milvus_data/
 minio_data/
 pdfs/
+logs/
