@@ -1,11 +1,12 @@
 from openai import OpenAI
 from src.utils.config import NVIDIA_BASE_URL, NVIDIA_API_KEY, EMBED_MODEL
+from src.utils.services.logger_config import logger
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 
 class EmbeddingHandler:
     def __init__(self):
-        print("Initializing EmbeddingHandler...")
+        logger.info("Initializing EmbeddingHandler...")
 
     def get_embedding(self, text: str):
 
@@ -19,18 +20,14 @@ class EmbeddingHandler:
         )
 
         embedding = response.data[0].embedding
-        print("Successfully retrieved embedding of length %d", len(embedding))
+        logger.info(f"Successfully retrieved embedding of length {len(embedding)}")
         return embedding
 
     def get_document_embeddings(
         self, chunk_size: int, chunk_overlap: int, long_text: str
     ):
         """Splits text into chunks and retrieves embeddings for each chunk."""
-        print(
-            "Splitting text into chunks with size %d and overlap %d",
-            chunk_size,
-            chunk_overlap,
-        )
+        logger.info(f"Splitting text into chunks with size {chunk_size} and overlap {chunk_overlap}")
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -38,14 +35,14 @@ class EmbeddingHandler:
         )
         text_chunks = splitter.split_text(long_text)
 
-        print("Generated %d text chunks", len(text_chunks))
+        logger.info("Generated %d text chunks", len(text_chunks))
         embeddings = []
 
         for i, chunk in enumerate(text_chunks):
             embedding = self.get_embedding(chunk)
             if embedding:
                 embeddings.append(embedding)
-                print("Successfully retrieved embedding for chunk %d", i + 1)
+                logger.info(f"Successfully retrieved embedding for chunk {i + 1}")
 
-        print("Completed generating embeddings for document.")
+        logger.info("Completed generating embeddings for document.")
         return embeddings, text_chunks

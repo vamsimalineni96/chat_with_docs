@@ -24,9 +24,13 @@ MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "")  # empty string = no auth
 
 COLLECTION_NAME = "rag_nim_milvus"
+CACHE_COLLECTION_NAME = "potter_qa_cache"
 EMBED_DIM = 4096  # nv-embed-v1 dimension
 
 # RAG / chunking config
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 TOP_K = 5
+
+# Toggling using cache or not
+TOGGLE_CACHE = True

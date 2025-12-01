@@ -3,12 +3,13 @@ from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
-from src.utils.rag_pipeline import answer_question
+from src.utils import config
 from src.utils.services.logger_config import logger
+from src.utils.chat.chat_service import cache_output, rag_output
 from src.utils.services.pdf_parser import PDFParser
-from src.utils.services.milvus_store import MilvusStoreHandler
-from src.utils.services.conversation_store import ConversationService
-from src.utils.services.redis_lock import ConversationLock, ConversationLockError
+from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
+from src.utils.services.conversation_store import get_conversation_service
+from src.utils.services.redis_lock import get_redis_lock, ConversationLockError
 from src.utils.db.database_debug import DBInspector
 from src.utils.db.database import get_db, Base, engine
 from src.utils.api.schemas import ChatRequest, ChatResponse
@@ -38,24 +39,25 @@ async def chat(
     """
     Multi-user, multi-turn chat endpoint with per-conversation locking.
     """
-    converstion_service = ConversationService()
-    redis_service = ConversationLock()
+    conversation_service = get_conversation_service()
+    redis_service = get_redis_lock()
 
+    # Obtaining the conversation and user id from the database
     logger.info("Fetching/Creating the user in the database")
-    user = converstion_service.get_or_create_user(
+    user = conversation_service.get_or_create_user(
         db, external_id=payload.user_external_id
     )
 
     if payload.conversation_id:
         logger.info("Fetching the conversation by conversation id")
-        conversation = converstion_service.get_conversation_by_id(
+        conversation = conversation_service.get_conversation_by_id(
             db,
             conversation_id=payload.conversation_id,
             user=user,
         )
         if conversation is None:
             logger.info("Conversation is not found")
-            conversation = converstion_service.create_conversation(
+            conversation = conversation_service.create_conversation(
                 db,
                 user=user,
                 title="Harry Potter chat",  # optional
@@ -64,6 +66,7 @@ async def chat(
 
     conv_id = str(conversation.id)
 
+    # Locking the converstation to allow for only one user per conv_id at a time
     try:
         logger.info(f"Locking the conversation using redis for conv_id: {conv_id}")
         lock_token = redis_service.acquire_conversation_lock(conv_id, wait=False)
@@ -73,41 +76,23 @@ async def chat(
             detail="Another message is being processed for this conversation.",
         )
 
+    # Searching the cache store before jumping into rag
     try:
-        logger.info("Accessing recent messages from the database")
-        recent_msgs = converstion_service.get_recent_messages(
-            db, conversation, limit=20, user= user
-        )
-        history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
+        if config.TOGGLE_CACHE:
+            logger.info("Searching the cache store for similar answer")
+            cached_answer = cache_output(payload)
+            if cached_answer:
+                return ChatResponse(conversation_id=conv_id, answer=cached_answer)
 
-        logger.info("Storing the new message into the database")
-        converstion_service.add_message(
-            db,
-            conversation=conversation,
-            user=user,
-            role="user",
-            content=payload.question,
-        )
-
-        answer = answer_question(
-            question=payload.question,
-            collection_name=payload.collection_name,
-            history=history_for_llm,
-        )
-
-        logger.info("Storing the chatbot's reply to the user query")
-        converstion_service.add_message(
-            db,
-            conversation=conversation,
-            user=user,
-            role="assistant",
-            content=answer,
-        )
-
-        return ChatResponse(
-            conversation_id=conv_id,
-            answer=answer,
-        )
+            else:
+                logger.info("Cache is missed, routing to RAG for answering")
+                rag_answer = rag_output(payload, db, conversation, user)
+                return ChatResponse(conversation_id=conv_id, answer=rag_answer)
+        else:
+            logger.info("Using RAG to answer the question")
+            rag_answer = rag_output(payload, db, conversation, user)
+            return ChatResponse(conversation_id=conv_id, answer=rag_answer)
+        
     finally:
         logger.info(f"Releasing the conversation lock for conv_id: {conv_id}")
         redis_service.release_conversation_lock(conv_id, lock_token)
@@ -146,10 +131,17 @@ async def clear_db():
     return {"message": "All tables are cleared"}
 
 
+@app.post("/clear_cache")
+async def clear_cache():
+    cache_store = get_cache_store()
+    cache_store.delete_collection()
+    return {"message": "cleared the cache_store"}
+
+
 @app.post("/debug_database")
 async def debug_db(user_id: str = None, conv_id: UUID = None):
     """
-    Print the database texts for debugging 
+    Print the database texts for debugging
     """
     db_debugger = DBInspector()
     print("Printing users")

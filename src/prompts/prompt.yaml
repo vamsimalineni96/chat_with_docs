@@ -19,6 +19,9 @@ user_prompt: |
 
   Now give a concise answer.
   
+  Important Rule:
+    - NEVER USE YOUR KNOWLEDGE TO ANSWER THE QUESTION, ALWAYS ANSWER THE QUESTION BASED ON THE GIVEN CONTEXT AND THE CONVERSATION THAT HAS OCURRED SO FAR.
+  
   Output Format:
   Return ONLY a valid JSON dictionary with the generated answer grounded in the context and the conversation so far.
   Do NOT include markdown, code fences, backticks, explanations, or any text outside the JSON object.

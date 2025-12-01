@@ -76,3 +76,12 @@ class ConversationLock:
                 except redis.WatchError:
                     # value changed between WATCH and EXEC, retry
                     continue
+
+
+_redis_store_instance = None
+
+def get_redis_lock():
+    global _redis_store_instance
+    if _redis_store_instance is None:
+        _redis_store_instance = ConversationLock()
+    return _redis_store_instance

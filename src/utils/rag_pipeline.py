@@ -2,7 +2,7 @@
 from typing import List, Dict, Any
 
 from src.utils import config
-from src.utils.services.milvus_store import MilvusStoreHandler
+from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
 
@@ -51,16 +51,31 @@ def answer_question(
     history: List[Dict],
 ) -> str:
     milvus_store = MilvusStoreHandler(collection_name=collection_name)
+    cache_store = get_cache_store()
     nim_client = NIMClient()
+
     logger.info("Retrieving context from Milvus Db")
     retrieved = milvus_store.search_similar_chunks(question, top_k=config.TOP_K)
     if not retrieved:
         return "No relevant context found in the vector store."
 
     context = build_context(retrieved)
-    # 2. Format history into a text block
+
+    # Format history into a text block
     history_text = format_history_for_prompt(history, max_turns=6)
-    
-    return nim_client.chat_completion(
+
+    answer = nim_client.chat_completion(
         history_text=history_text, question=question, context=context
     )
+
+    context_chunk_ids = [item.get("id") for item in retrieved]
+
+    logger.info("Storing the conversation in the rag cache")
+    cache_store.put_entry(
+        question_text=question,
+        answer_text=answer,
+        context_chunk_ids=context_chunk_ids,
+        model_name=config.LLM_MODEL,
+        prompt_version="hp_v3",
+    )
+    return answer

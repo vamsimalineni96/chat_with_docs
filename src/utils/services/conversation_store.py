@@ -19,8 +19,10 @@ class ConversationService:
             .one_or_none()
         )
         if user:
+            logger.info(f"User with id: {external_id} is present")
             return user
 
+        logger.info(f"Creating the user with user_id: {external_id}")
         user = models.User(external_id=external_id)
         db.add(user)
         db.commit()
@@ -118,3 +120,11 @@ class ConversationService:
         )
         # Reverse to chronological order
         return list(reversed(msgs))
+
+_conversation_service_instance = None
+
+def get_conversation_service():
+    global _conversation_service_instance
+    if _conversation_service_instance is None:
+        _conversation_service_instance = ConversationService()
+    return _conversation_service_instance

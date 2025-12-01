@@ -1,11 +1,11 @@
-# milvus_store.py
+import uuid
 from typing import List, Dict, Any, Optional
 from pymilvus import MilvusClient, DataType
+from datetime import datetime
 
-import uuid
 from src.utils import config
 from src.utils.services.embedder import EmbeddingHandler
-
+from src.utils.services.logger_config import logger
 
 class MilvusStoreHandler:
     def __init__(
@@ -229,3 +229,278 @@ class MilvusStoreHandler:
                 print((r.get("text") or "")[:200], "...")
         else:
             print("collection is empty")
+
+class CacheStoreHandler:
+    """
+    Semantic QA cache in Milvus.
+
+    - Each entry is a (question embedding, answer, metadata) row.
+    - We search this collection first before doing full RAG.
+    """
+
+    def __init__(
+        self,
+        uri: Optional[str] = None,
+        token: Optional[str] = None,
+        collection_name: Optional[str] = None,
+        embedder: Optional[EmbeddingHandler] = None,
+    ) -> None:
+        """
+        Wrapper around MilvusClient + embedding for QA cache.
+        """
+        self.uri = uri or config.MILVUS_URI
+        self.token = token or getattr(config, "MILVUS_TOKEN", None)
+
+        # use a separate collection from your document chunks
+        self.collection_name = collection_name or config.CACHE_COLLECTION_NAME
+
+        self.embed_dim = config.EMBED_DIM
+        self.top_k = getattr(config, "TOP_K", 5)
+
+        self.client = self._get_milvus_client()
+        self.embedder = embedder or EmbeddingHandler()
+
+        # Make sure the cache collection exists and is loaded
+        logger.info("Ensuring cache store has the collection")
+        self.ensure_collection()
+
+    # ------------------------------------------------------------------
+    # Client / collection setup
+    # ------------------------------------------------------------------
+    def _get_milvus_client(self) -> MilvusClient:
+        """
+        Return a MilvusClient pointing to the standalone server.
+        """
+        if self.token:
+            return MilvusClient(uri=self.uri, token=self.token)
+        return MilvusClient(uri=self.uri)
+
+    def ensure_collection(self) -> None:
+        """
+        Create the cache collection and index if it doesn't exist, then load it.
+        """
+        if not self.client.has_collection(self.collection_name):
+            schema = MilvusClient.create_schema(
+                auto_id=False,
+                enable_dynamic_field=True,  # store extra metadata in $meta
+            )
+            schema.add_field(
+                field_name="id",
+                datatype=DataType.VARCHAR,
+                is_primary=True,
+                max_length=64,
+            )
+            schema.add_field(
+                field_name="embedding",
+                datatype=DataType.FLOAT_VECTOR,
+                dim=self.embed_dim,
+            )
+
+            self.client.create_collection(
+                collection_name=self.collection_name,
+                schema=schema,
+                consistency_level="Strong",
+            )
+
+            index_params = self.client.prepare_index_params()
+            index_params.add_index(
+                field_name="embedding",
+                index_type="AUTOINDEX",
+                metric_type="COSINE",
+            )
+
+            self.client.create_index(
+                collection_name=self.collection_name,
+                index_params=index_params,
+            )
+
+        # Always make sure collection is loaded before use
+        logger.info(f"Loading the cache collection: {self.collection_name}")
+        self.client.load_collection(collection_name=self.collection_name)
+
+    # ------------------------------------------------------------------
+    # Public API: put & search
+    # ------------------------------------------------------------------
+    def put_entry(
+        self,
+        question_text: str,
+        answer_text: str,
+        context_chunk_ids: List[str],
+        model_name: str,
+        prompt_version: str,
+        style: str = "factual",
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """
+        Store a QA cache entry: (question embedding + answer + metadata).
+        Returns the new entry id.
+        """
+        self.ensure_collection()
+
+        # Embed the question for semantic lookup
+        q_vec = self.embedder.get_embedding(text=question_text)
+        entry_id = str(uuid.uuid4())
+
+        row: Dict[str, Any] = {
+            "id": entry_id,
+            "embedding": q_vec,
+            # query side
+            "question_text": question_text,
+            "question_norm": question_text.strip().lower(),
+            # answer side
+            "answer_text": answer_text,
+            # retrieval context
+            "context_chunk_ids": context_chunk_ids,
+            # generation config
+            "model_name": model_name,
+            "prompt_version": prompt_version,
+            "style": style,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            # bookkeeping
+            "created_at": datetime.utcnow().isoformat(),
+            "hit_count": 0,
+            "last_hit_at": None,
+        }
+
+        if extra_metadata:
+            # Allow caller to stuff anything else into dynamic meta
+            row.update(extra_metadata)
+
+        self.client.insert(
+            collection_name=self.collection_name,
+            data=[row],
+        )
+        self.client.flush(self.collection_name)
+        return entry_id
+
+    def search_similar(
+        self,
+        query: str,
+        model_name: str,
+        prompt_version: str,
+        top_k: Optional[int] = None,
+        min_similarity: float = 0.9,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Semantic QA cache lookup.
+
+        - Embeds `query`
+        - Vector search in cache collection
+        - Filters by model_name, prompt_version, style
+        - Enforces similarity threshold `min_similarity` (0-1)
+
+        Returns the best matching entry dict or None.
+        """
+        if top_k is None:
+            top_k = self.top_k
+
+        self.client.load_collection(collection_name=self.collection_name)
+
+        q_vec = self.embedder.get_embedding(text=query)
+
+        res = self.client.search(
+            collection_name=self.collection_name,
+            data=[q_vec],
+            anns_field="embedding",
+            limit=top_k,
+            output_fields=[
+                "question_text",
+                "question_norm",
+                "answer_text",
+                "context_chunk_ids",
+                "model_name",
+                "prompt_version",
+                "temperature",
+                "max_tokens",
+                "created_at",
+                "hit_count",
+                "last_hit_at",
+            ],
+            search_params={
+                "metric_type": "COSINE",
+                "params": {"nprobe": 16},
+            },
+        )
+
+        hits = res[0]  # single query
+        best: Optional[Dict[str, Any]] = None
+
+        for h in hits:
+            # Milvus with COSINE typically uses distance = 1 - cosine_similarity
+            distance = h["distance"]
+            similarity = 1.0 - float(distance)
+
+            meta = {
+                "id": h["id"],
+                "distance": distance,
+                "similarity": similarity,
+                "question_text": h.get("question_text"),
+                "question_norm": h.get("question_norm"),
+                "answer_text": h.get("answer_text"),
+                "context_chunk_ids": h.get("context_chunk_ids") or [],
+                "model_name": h.get("model_name"),
+                "prompt_version": h.get("prompt_version"),
+                "temperature": h.get("temperature"),
+                "max_tokens": h.get("max_tokens"),
+                "created_at": h.get("created_at"),
+                "hit_count": h.get("hit_count"),
+                "last_hit_at": h.get("last_hit_at"),
+            }
+            logger.info(
+                f"[CACHE CANDIDATE] sim={similarity:.4f}, "
+                f"model={meta['model_name']}, prompt={meta['prompt_version']}, "
+                f"q='{meta['question_text']}'"
+            )
+
+            if (
+                similarity >= min_similarity
+                and meta["model_name"] == model_name
+                and meta["prompt_version"] == prompt_version
+            ):
+                best = meta
+                break
+        
+        if best is None:
+            logger.info(f"[CACHE MISS] no suitable entry for query='{query}'")
+        
+        return best
+
+    # ------------------------------------------------------------------
+    # Optional helpers
+    # ------------------------------------------------------------------
+    def delete_collection(self) -> None:
+        """
+        Drop the cache collection (for resets / migrations).
+        """
+        collection_name = self.collection_name
+
+        state = self.client.get_load_state(collection_name=collection_name)
+        if state.get("state") == "Loaded":
+            print(f"Releasing cache collection '{collection_name}' from memory...")
+            self.client.release_collection(collection_name=collection_name)
+            print("Collection released.")
+
+        print(f"Dropping cache collection '{collection_name}'...")
+        self.client.drop_collection(collection_name=collection_name)
+        print(f"Cache collection '{collection_name}' dropped successfully.")
+
+
+_cache_store_instance = None
+
+def get_cache_store():
+    global _cache_store_instance
+    if _cache_store_instance is None:
+        _cache_store_instance = CacheStoreHandler()
+    return _cache_store_instance
+
+
+_milvus_store_instance = None
+
+def get_milvus_store():
+    global _milvus_store_instance
+    if _milvus_store_instance is None:
+        _milvus_store_instance = MilvusStoreHandler()
+    return _milvus_store_instance
