@@ -76,7 +76,7 @@ async def chat(
     try:
         logger.info("Accessing recent messages from the database")
         recent_msgs = converstion_service.get_recent_messages(
-            db, conversation, limit=20
+            db, conversation, limit=20, user= user
         )
         history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
 
@@ -84,6 +84,7 @@ async def chat(
         converstion_service.add_message(
             db,
             conversation=conversation,
+            user=user,
             role="user",
             content=payload.question,
         )
@@ -98,6 +99,7 @@ async def chat(
         converstion_service.add_message(
             db,
             conversation=conversation,
+            user=user,
             role="assistant",
             content=answer,
         )
@@ -113,6 +115,9 @@ async def chat(
 
 @app.post("/upload_pdf")
 async def upload_pdf(pdf_name: str, collection_name: str):
+    """
+    Upload the pdf for chatting.
+    """
     vector_store = MilvusStoreHandler(collection_name=collection_name)
     pdf_path = f"pdfs/{pdf_name}"
 
@@ -129,6 +134,9 @@ async def upload_pdf(pdf_name: str, collection_name: str):
 
 @app.post("/clear_post_gres")
 async def clear_db():
+    """
+    Clear the post gres database
+    """
     with Session(engine) as session:
         for table in reversed(Base.metadata.sorted_tables):
             logger.info(f"Deleting from {table.name}...")
@@ -140,6 +148,9 @@ async def clear_db():
 
 @app.post("/debug_database")
 async def debug_db(user_id: str = None, conv_id: UUID = None):
+    """
+    Print the database texts for debugging 
+    """
     db_debugger = DBInspector()
     print("Printing users")
     db_debugger.print_users()

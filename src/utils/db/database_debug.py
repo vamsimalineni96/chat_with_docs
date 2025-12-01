@@ -3,7 +3,7 @@ from typing import Optional
 
 from src.utils.db.database import SessionLocal
 from src.utils.db import models
-
+from sqlalchemy.orm import Session
 
 class DBInspector:
     """Utility class for inspecting database contents."""

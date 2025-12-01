@@ -1,8 +1,10 @@
 from typing import List, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import func, desc
+from fastapi import HTTPException
 
 from src.utils.db import models
+from src.utils.services.logger_config import logger
 
 
 class ConversationService:
@@ -18,7 +20,7 @@ class ConversationService:
         )
         if user:
             return user
-        
+
         user = models.User(external_id=external_id)
         db.add(user)
         db.commit()
@@ -42,22 +44,33 @@ class ConversationService:
     def get_conversation_by_id(
         db: Session,
         conversation_id: str,
-        user: Optional[models.User] = None,
+        user: models.User,
     ) -> Optional[models.Conversation]:
         """Get conversation by ID, optionally filtered by user."""
-        q = db.query(models.Conversation).filter(models.Conversation.id == conversation_id)
-        if user is not None:
-            q = q.filter(models.Conversation.user_id == user.id)
-        return q.one_or_none()
+        return (
+            db.query(models.Conversation)
+            .filter(
+                models.Conversation.id == conversation_id,
+                models.Conversation.user_id == user.id,
+            )
+            .one_or_none()
+        )
 
     @staticmethod
     def add_message(
         db: Session,
         conversation: models.Conversation,
+        user: models.User,
         role: str,
         content: str,
     ) -> models.Message:
         """Add a message to conversation with auto-incrementing sequence."""
+        if conversation.user_id != user.id:
+            logger.error(f"Conversation does not belong to this user: {user.id}")
+            raise HTTPException(
+                status_code=403,
+                detail="Conversation does not belong to this user.",
+            )
         # Find next sequence_no
         last_seq = (
             db.query(func.max(models.Message.sequence_no))
@@ -85,12 +98,20 @@ class ConversationService:
     def get_recent_messages(
         db: Session,
         conversation: models.Conversation,
+        user: models.User,
         limit: int = 20,
     ) -> List[models.Message]:
         """Get recent messages in chronological order."""
         msgs = (
             db.query(models.Message)
-            .filter(models.Message.conversation_id == conversation.id)
+            .join(
+                models.Conversation,
+                models.Message.conversation_id == models.Conversation.id,
+            )
+            .filter(
+                models.Message.conversation_id == conversation.id,
+                models.Conversation.user_id == user.id,
+            )
             .order_by(desc(models.Message.sequence_no))
             .limit(limit)
             .all()
