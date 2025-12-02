@@ -18,6 +18,7 @@ LLM_MODEL = os.getenv("NVIDIA_LLM_MODEL", "meta/llama-3.3-70b-instruct")
 TEMPERATURE = float(os.getenv("TEMPERATURE",0.1))
 TOP_P = float(os.getenv("TOP_P",0.7))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS",1024))
+PROMPT_VERSION ="hp_v3"
 
 # Milvus config (standalone server in Docker)
 MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
@@ -33,4 +34,4 @@ CHUNK_OVERLAP = 150
 TOP_K = 5
 
 # Toggling using cache or not
-TOGGLE_CACHE = True
+TOGGLE_CACHE = False

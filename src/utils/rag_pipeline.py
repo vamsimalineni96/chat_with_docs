@@ -47,6 +47,7 @@ def format_history_for_prompt(history: List[Dict], max_turns: int = 6) -> str:
 
 def answer_question(
     question: str,
+    query_vec: List[float],
     collection_name: str,
     history: List[Dict],
 ) -> str:
@@ -55,7 +56,9 @@ def answer_question(
     nim_client = NIMClient()
 
     logger.info("Retrieving context from Milvus Db")
-    retrieved = milvus_store.search_similar_chunks(question, top_k=config.TOP_K)
+    retrieved = milvus_store.search_similar_chunks(
+        query_vec=query_vec, top_k=config.TOP_K
+    )
     if not retrieved:
         return "No relevant context found in the vector store."
 
@@ -73,9 +76,10 @@ def answer_question(
     logger.info("Storing the conversation in the rag cache")
     cache_store.put_entry(
         question_text=question,
+        query_vec=query_vec,
         answer_text=answer,
         context_chunk_ids=context_chunk_ids,
         model_name=config.LLM_MODEL,
-        prompt_version="hp_v3",
+        prompt_version=config.PROMPT_VERSION,
     )
     return answer

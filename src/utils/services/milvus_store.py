@@ -7,6 +7,7 @@ from src.utils import config
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
 
+
 class MilvusStoreHandler:
     def __init__(
         self,
@@ -145,7 +146,7 @@ class MilvusStoreHandler:
 
     def search_similar_chunks(
         self,
-        query: str,
+        query_vec: List[float],
         top_k: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
@@ -158,7 +159,7 @@ class MilvusStoreHandler:
         self.client.load_collection(collection_name=self.collection_name)
 
         # Embed query with input_type="query"
-        query_vec = self.embedder.get_embedding(text=query)
+        # query_vec = self.embedder.get_embedding(text=query)
 
         res = self.client.search(
             collection_name=self.collection_name,
@@ -230,6 +231,7 @@ class MilvusStoreHandler:
         else:
             print("collection is empty")
 
+
 class CacheStoreHandler:
     """
     Semantic QA cache in Milvus.
@@ -264,9 +266,6 @@ class CacheStoreHandler:
         logger.info("Ensuring cache store has the collection")
         self.ensure_collection()
 
-    # ------------------------------------------------------------------
-    # Client / collection setup
-    # ------------------------------------------------------------------
     def _get_milvus_client(self) -> MilvusClient:
         """
         Return a MilvusClient pointing to the standalone server.
@@ -318,17 +317,14 @@ class CacheStoreHandler:
         logger.info(f"Loading the cache collection: {self.collection_name}")
         self.client.load_collection(collection_name=self.collection_name)
 
-    # ------------------------------------------------------------------
-    # Public API: put & search
-    # ------------------------------------------------------------------
     def put_entry(
         self,
         question_text: str,
+        query_vec: List[float],
         answer_text: str,
         context_chunk_ids: List[str],
         model_name: str,
         prompt_version: str,
-        style: str = "factual",
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
@@ -340,12 +336,12 @@ class CacheStoreHandler:
         self.ensure_collection()
 
         # Embed the question for semantic lookup
-        q_vec = self.embedder.get_embedding(text=question_text)
+        # q_vec = self.embedder.get_embedding(text=question_text)
         entry_id = str(uuid.uuid4())
 
         row: Dict[str, Any] = {
             "id": entry_id,
-            "embedding": q_vec,
+            "embedding": query_vec,
             # query side
             "question_text": question_text,
             "question_norm": question_text.strip().lower(),
@@ -356,7 +352,6 @@ class CacheStoreHandler:
             # generation config
             "model_name": model_name,
             "prompt_version": prompt_version,
-            "style": style,
             "temperature": temperature,
             "max_tokens": max_tokens,
             # bookkeeping
@@ -379,6 +374,7 @@ class CacheStoreHandler:
     def search_similar(
         self,
         query: str,
+        q_vec: List[float],
         model_name: str,
         prompt_version: str,
         top_k: Optional[int] = None,
@@ -399,7 +395,7 @@ class CacheStoreHandler:
 
         self.client.load_collection(collection_name=self.collection_name)
 
-        q_vec = self.embedder.get_embedding(text=query)
+        # q_vec = self.embedder.get_embedding(text=query)
 
         res = self.client.search(
             collection_name=self.collection_name,
@@ -462,15 +458,12 @@ class CacheStoreHandler:
             ):
                 best = meta
                 break
-        
+
         if best is None:
             logger.info(f"[CACHE MISS] no suitable entry for query='{query}'")
-        
+
         return best
 
-    # ------------------------------------------------------------------
-    # Optional helpers
-    # ------------------------------------------------------------------
     def delete_collection(self) -> None:
         """
         Drop the cache collection (for resets / migrations).
@@ -490,6 +483,7 @@ class CacheStoreHandler:
 
 _cache_store_instance = None
 
+
 def get_cache_store():
     global _cache_store_instance
     if _cache_store_instance is None:
@@ -498,6 +492,7 @@ def get_cache_store():
 
 
 _milvus_store_instance = None
+
 
 def get_milvus_store():
     global _milvus_store_instance

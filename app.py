@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from src.utils import config
 from src.utils.services.logger_config import logger
 from src.utils.chat.chat_service import cache_output, rag_output
+from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.pdf_parser import PDFParser
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.conversation_store import get_conversation_service
@@ -41,6 +42,7 @@ async def chat(
     """
     conversation_service = get_conversation_service()
     redis_service = get_redis_lock()
+    embedder = EmbeddingHandler()
 
     # Obtaining the conversation and user id from the database
     logger.info("Fetching/Creating the user in the database")
@@ -78,21 +80,24 @@ async def chat(
 
     # Searching the cache store before jumping into rag
     try:
+        logger.info("Generating the embedding for question")
+        q_embed = embedder.get_embedding(text=payload.question)
+
         if config.TOGGLE_CACHE:
             logger.info("Searching the cache store for similar answer")
-            cached_answer = cache_output(payload)
+            cached_answer = cache_output(payload, q_embed)
             if cached_answer:
                 return ChatResponse(conversation_id=conv_id, answer=cached_answer)
 
             else:
                 logger.info("Cache is missed, routing to RAG for answering")
-                rag_answer = rag_output(payload, db, conversation, user)
+                rag_answer = rag_output(payload, db, conversation, user, query_vec=q_embed)
                 return ChatResponse(conversation_id=conv_id, answer=rag_answer)
         else:
             logger.info("Using RAG to answer the question")
-            rag_answer = rag_output(payload, db, conversation, user)
+            rag_answer = rag_output(payload, db, conversation, user, query_vec=q_embed)
             return ChatResponse(conversation_id=conv_id, answer=rag_answer)
-        
+
     finally:
         logger.info(f"Releasing the conversation lock for conv_id: {conv_id}")
         redis_service.release_conversation_lock(conv_id, lock_token)
@@ -151,3 +156,11 @@ async def debug_db(user_id: str = None, conv_id: UUID = None):
     print(f"Printing Messages from conversation: {conv_id}")
     db_debugger.print_messages(conversation_id=conv_id)
     return {"message": "Details are printed"}
+
+
+@app.post("/view_milvus_store")
+async def view_store():
+    milvus_store = MilvusStoreHandler()
+    milvus_store.view_collection(collection_name=config.COLLECTION_NAME)
+
+    return {"message": "the details are printed"}
