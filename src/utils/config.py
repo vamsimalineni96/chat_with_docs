@@ -13,8 +13,8 @@ REDIS_URL = os.getenv("REDIS_URL")
 NVIDIA_API_KEY = os.environ["NVIDIA_API_KEY"]
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL")
 
-EMBED_MODEL = os.getenv("NVIDIA_EMBEDDING_MODEL", "nvidia/nv-embed-v1")
-LLM_MODEL = os.getenv("NVIDIA_LLM_MODEL", "meta/llama-3.3-70b-instruct")
+EMBED_MODEL = os.getenv("NVIDIA_EMBEDDING_MODEL")
+LLM_MODEL = os.getenv("NVIDIA_LLM_MODEL")
 TEMPERATURE = float(os.getenv("TEMPERATURE",0.1))
 TOP_P = float(os.getenv("TOP_P",0.7))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS",1024))
@@ -24,9 +24,10 @@ PROMPT_VERSION ="hp_v3"
 MILVUS_URI = os.getenv("MILVUS_URI", "http://localhost:19530")
 MILVUS_TOKEN = os.getenv("MILVUS_TOKEN", "")  # empty string = no auth
 
-COLLECTION_NAME = "rag_nim_milvus"
+COLLECTION_NAME = "docs"
+# COLLECTION_NAME = "rag_nim_milvus"
 CACHE_COLLECTION_NAME = "potter_qa_cache"
-EMBED_DIM = 4096  # nv-embed-v1 dimension
+EMBED_DIM = 1024  # nv-embedqa-e5-v5 dimension
 
 # RAG / chunking config
 CHUNK_SIZE = 800

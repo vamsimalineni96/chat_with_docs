@@ -8,3 +8,4 @@ pymupdf==1.26.6
 sqlalchemy==2.0.44
 psycopg2-binary==2.9.11
 redis==7.1.0
+locust==2.42.6

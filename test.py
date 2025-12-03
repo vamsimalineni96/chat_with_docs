@@ -1,44 +1,82 @@
-# from pymilvus import MilvusClient
+import re
+from typing import Dict, Any
 
-# client = MilvusClient(uri="http://localhost:19530")
-# print(client.list_collections())
+LOG_METRIC_TAG = "RAG_PIPELINE_METRICS"
 
-# if len(client.list_collections())!=0:
-#     info = client.describe_collection("rag_nim_milvus")
-#     print(info)
-#     client.load_collection(collection_name="rag_nim_milvus")
-#     rows = client.query(
-#         collection_name="rag_nim_milvus",
-#         filter="",                      # no filter -> everything
-#         output_fields=["id", "doc_id", "source", "chunk_order", "text"],
-#         limit=5,                        # just peek at first 5
-#     )
-
-#     for r in rows:
-#         print("-" * 80)
-#         print("id:        ", r.get("id"))
-#         print("doc_id:    ", r.get("doc_id"))
-#         print("source:    ", r.get("source"))
-#         print("order:     ", r.get("chunk_order"))
-#         print("text[0:200]:")
-#         print((r.get("text") or "")[:200], "...")
-# else:
-#     print("collection is empty")
-#####################################################################
-#####################################################################
-#####################################################################
-
-from src.utils.services.milvus_store import MilvusStoreHandler
-from src.utils.services.pdf_parser import PDFParser
-
-pdf_path = "pdfs\hp.pdf"
-parser = PDFParser(pdf_path)
-pages = parser.parse_pdf()
-print(f"Total pages parsed: {len(pages)}")
+# Example:
+# 2025-12-03 14:31:31,303 | INFO | chat_service | RAG_PIPELINE_METRICS | conv_id=... | db_load_ms=16.01 | ...
+LINE_REGEX = re.compile(
+    r'^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3})\s+\|\s+.*?'
+    + re.escape(LOG_METRIC_TAG)
+    + r'\s+\|\s+(?P<kvpairs>.+)$'
+)
 
 
-# Continuous full text of the book
-for i in range(1, len(pages)):
-    long_text = pages[i].get("text")
-    MilvusStoreHandler().store_in_milvus(text=long_text)
-    print(f"Uploaded page: {i} to the vectordb")
+def parse_metrics_from_log(log_path: str) -> Dict[str, Dict[str, Any]]:
+    """
+    Parse RAG pipeline metrics from a log file.
+
+    Returns:
+        {
+          "2025-12-03 14:31:31,303": {
+              "conv_id": "c5a21ce9-...",
+              "domain": "harry_potter",
+              "db_load_ms": 16.01,
+              "milvus_ms": 221.54,
+              "llm_ms": 952.93,
+              "db_save_ms": 25.03,
+              "total_ms": 1243.54,
+          },
+          ...
+        }
+    """
+    metrics_by_ts: Dict[str, Dict[str, Any]] = {}
+
+    with open(log_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if LOG_METRIC_TAG not in line:
+                continue  # fast skip
+
+            m = LINE_REGEX.match(line)
+            if not m:
+                continue
+
+            ts = m.group("ts")
+            kv_str = m.group("kvpairs")
+
+            # Each piece is like "conv_id=...", "domain=...", "db_load_ms=16.01"
+            parts = [p.strip() for p in kv_str.split("|")]
+            kv_dict: Dict[str, Any] = {}
+
+            for part in parts:
+                if "=" not in part:
+                    continue
+                key, value = part.split("=", 1)
+                key = key.strip()
+                value = value.strip()
+
+                # Try to cast numeric metrics to float (e.g., *_ms or numeric strings)
+                if key.endswith("_ms"):
+                    try:
+                        kv_dict[key] = float(value)
+                    except ValueError:
+                        kv_dict[key] = value  # fallback to raw string
+                else:
+                    # Generic heuristic: cast to float if it looks numeric
+                    try:
+                        num_val = float(value)
+                        kv_dict[key] = num_val
+                    except ValueError:
+                        kv_dict[key] = value
+
+            metrics_by_ts[ts] = kv_dict
+
+    return metrics_by_ts
+
+
+if __name__ == "__main__":
+    # demo
+    metrics = parse_metrics_from_log("src\logs\central_log.log")
+    for ts, data in metrics.items():
+        print(ts, "->", data)

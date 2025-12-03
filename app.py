@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from src.utils import config
+from src.utils.errors import InferenceError
 from src.utils.services.logger_config import logger
 from src.utils.chat.chat_service import cache_output, rag_output
 from src.utils.services.embedder import EmbeddingHandler
@@ -15,6 +16,9 @@ from src.utils.db.database_debug import DBInspector
 from src.utils.db.database import get_db, Base, engine
 from src.utils.api.schemas import ChatRequest, ChatResponse
 
+conversation_service = get_conversation_service()
+redis_service = get_redis_lock()
+embedder = EmbeddingHandler()
 app = FastAPI()
 
 app.add_middleware(
@@ -25,6 +29,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 @app.on_event("startup")
 def on_startup():
@@ -40,10 +47,6 @@ async def chat(
     """
     Multi-user, multi-turn chat endpoint with per-conversation locking.
     """
-    conversation_service = get_conversation_service()
-    redis_service = get_redis_lock()
-    embedder = EmbeddingHandler()
-
     # Obtaining the conversation and user id from the database
     logger.info("Fetching/Creating the user in the database")
     user = conversation_service.get_or_create_user(
@@ -65,6 +68,13 @@ async def chat(
                 title="Harry Potter chat",  # optional
             )
             logger.info("Created the new conversation in the database")
+    else:
+        logger.info("No conversation id provided, creating a new conversation")
+        conversation = conversation_service.create_conversation(
+            db,
+            user=user,
+            title="Harry Potter chat",
+        )
 
     conv_id = str(conversation.id)
 
@@ -81,7 +91,7 @@ async def chat(
     # Searching the cache store before jumping into rag
     try:
         logger.info("Generating the embedding for question")
-        q_embed = embedder.get_embedding(text=payload.question)
+        q_embed = embedder.get_embedding(text=payload.question, input_type="query")
 
         if config.TOGGLE_CACHE:
             logger.info("Searching the cache store for similar answer")
@@ -91,13 +101,29 @@ async def chat(
 
             else:
                 logger.info("Cache is missed, routing to RAG for answering")
-                rag_answer = rag_output(payload, db, conversation, user, query_vec=q_embed)
+                rag_answer = rag_output(
+                    payload, db, conversation, user, query_vec=q_embed
+                )
                 return ChatResponse(conversation_id=conv_id, answer=rag_answer)
         else:
             logger.info("Using RAG to answer the question")
             rag_answer = rag_output(payload, db, conversation, user, query_vec=q_embed)
             return ChatResponse(conversation_id=conv_id, answer=rag_answer)
-
+    
+    except InferenceError as e:
+        # This is where all inference-layer failures (NIM issues, bad output, etc.) land
+        logger.error(
+            "Inference error in /chat for conv_id=%s: %s", conv_id, e, exc_info=e
+        )
+        # Locust will see 502 and this JSON body
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "INFERENCE_ERROR",
+                "message": str(e),
+            },
+        )
+    
     finally:
         logger.info(f"Releasing the conversation lock for conv_id: {conv_id}")
         redis_service.release_conversation_lock(conv_id, lock_token)
