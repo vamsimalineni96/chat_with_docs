@@ -1,10 +1,22 @@
 from uuid import UUID
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.utils import config
-from src.utils.errors import InferenceError
+from src.utils.errors import (
+    InferenceError,
+    ConversationServiceError,
+    ConversationOwnershipError,
+    DatabaseError,
+    MilvusError,
+    CacheError,
+    EmbeddingError,
+    PDFParseError,
+    RedisLockError,
+)
 from src.utils.services.logger_config import logger
 from src.utils.chat.chat_service import cache_output, rag_output
 from src.utils.services.embedder import EmbeddingHandler
@@ -29,13 +41,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 @app.get("/health")
 async def health():
     return {"status": "ok"}
 
+
 @app.on_event("startup")
 def on_startup():
-    logger.info("Created the tables")
+    logger.info("Creating tables (if not exist)")
     Base.metadata.create_all(bind=engine)
 
 
@@ -47,75 +61,131 @@ async def chat(
     """
     Multi-user, multi-turn chat endpoint with per-conversation locking.
     """
-    # Obtaining the conversation and user id from the database
-    logger.info("Fetching/Creating the user in the database")
-    user = conversation_service.get_or_create_user(
-        db, external_id=payload.user_external_id
-    )
+    conv_id: str | None = None
+    lock_token: str | None = None
 
-    if payload.conversation_id:
-        logger.info("Fetching the conversation by conversation id")
-        conversation = conversation_service.get_conversation_by_id(
-            db,
-            conversation_id=payload.conversation_id,
-            user=user,
+    try:
+        # 1) User + conversation setup
+        logger.info("Fetching/Creating the user in the database")
+        user = conversation_service.get_or_create_user(
+            db, external_id=payload.user_external_id
         )
-        if conversation is None:
-            logger.info("Conversation is not found")
+
+        if payload.conversation_id:
+            logger.info("Fetching the conversation by conversation id")
+            conversation = conversation_service.get_conversation_by_id(
+                db,
+                conversation_id=payload.conversation_id,
+                user=user,
+            )
+            if conversation is None:
+                logger.info("Conversation not found; creating a new one")
+                conversation = conversation_service.create_conversation(
+                    db,
+                    user=user,
+                    title="Harry Potter chat",
+                )
+        else:
+            logger.info(
+                "No conversation id provided, creating a new conversation for user_id=%s",
+                user.id,
+            )
             conversation = conversation_service.create_conversation(
                 db,
                 user=user,
-                title="Harry Potter chat",  # optional
+                title="Harry Potter chat",
             )
-            logger.info("Created the new conversation in the database")
-    else:
-        logger.info("No conversation id provided, creating a new conversation")
-        conversation = conversation_service.create_conversation(
-            db,
-            user=user,
-            title="Harry Potter chat",
-        )
 
-    conv_id = str(conversation.id)
+        conv_id = str(conversation.id)
 
-    # Locking the converstation to allow for only one user per conv_id at a time
-    try:
-        logger.info(f"Locking the conversation using redis for conv_id: {conv_id}")
-        lock_token = redis_service.acquire_conversation_lock(conv_id, wait=False)
-    except ConversationLockError:
-        raise HTTPException(
-            status_code=409,
-            detail="Another message is being processed for this conversation.",
-        )
+        # 2) Locking
+        try:
+            logger.info(
+                "Locking the conversation using Redis for conv_id=%s", conv_id
+            )
+            lock_token = redis_service.acquire_conversation_lock(
+                conv_id, wait=False
+            )
+        except ConversationLockError as e:
+            logger.warning(
+                "Conversation lock error for conv_id=%s: %s", conv_id, e
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="Another message is being processed for this conversation.",
+            )
 
-    # Searching the cache store before jumping into rag
-    try:
+        # 3) Embeddings + Cache + RAG
         logger.info("Generating the embedding for question")
-        q_embed = embedder.get_embedding(text=payload.question, input_type="query")
+        try:
+            q_embed = embedder.get_embedding(
+                text=payload.question, input_type="query"
+            )
+        except EmbeddingError as e:
+            logger.error("Embedding error in /chat for conv_id=%s: %s", conv_id, e)
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error_type": "EMBEDDING_ERROR",
+                    "message": str(e),
+                },
+            )
 
         if config.TOGGLE_CACHE:
             logger.info("Searching the cache store for similar answer")
-            cached_answer = cache_output(payload, q_embed)
+            try:
+                cached_answer = cache_output(payload, q_embed)
+            except CacheError as e:
+                logger.error("Cache error in /chat for conv_id=%s: %s", conv_id, e)
+                # Treat cache failure as non-fatal: just fall back to RAG
+                cached_answer = None
+
             if cached_answer:
                 return ChatResponse(conversation_id=conv_id, answer=cached_answer)
-
             else:
-                logger.info("Cache is missed, routing to RAG for answering")
+                logger.info("Cache miss, routing to RAG for answering")
                 rag_answer = rag_output(
                     payload, db, conversation, user, query_vec=q_embed
                 )
                 return ChatResponse(conversation_id=conv_id, answer=rag_answer)
         else:
             logger.info("Using RAG to answer the question")
-            rag_answer = rag_output(payload, db, conversation, user, query_vec=q_embed)
+            rag_answer = rag_output(
+                payload, db, conversation, user, query_vec=q_embed
+            )
             return ChatResponse(conversation_id=conv_id, answer=rag_answer)
-    
+
+    except ConversationOwnershipError as e:
+        logger.error(
+            "Ownership error in /chat for conv_id=%s, user_external_id=%s: %s",
+            conv_id,
+            payload.user_external_id,
+            e,
+        )
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error_type": "CONVERSATION_OWNERSHIP_ERROR",
+                "message": str(e),
+            },
+        )
+
+    except ConversationServiceError as e:
+        logger.exception(
+            "Conversation service error in /chat for conv_id=%s: %s", conv_id, e
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "CONVERSATION_SERVICE_ERROR",
+                "message": str(e),
+            },
+        )
+
     except InferenceError as e:
-        # This is where all inference-layer failures (NIM issues, bad output, etc.) land
         logger.error(
             "Inference error in /chat for conv_id=%s: %s", conv_id, e, exc_info=e
         )
-        # Locust will see 502 and this JSON body
         raise HTTPException(
             status_code=502,
             detail={
@@ -123,70 +193,187 @@ async def chat(
                 "message": str(e),
             },
         )
-    
+
+    except (MilvusError, CacheError) as e:
+        logger.exception("Vector store/cache error in /chat: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "VECTOR_STORE_ERROR",
+                "message": str(e),
+            },
+        )
+
+    except SQLAlchemyError as e:
+        logger.exception("Raw SQLAlchemy error in /chat: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "DATABASE_ERROR",
+                "message": "Database operation failed.",
+            },
+        )
+
+    except Exception as e:
+        logger.exception("Unexpected error while handling /chat: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while processing the request.",
+        )
+
     finally:
-        logger.info(f"Releasing the conversation lock for conv_id: {conv_id}")
-        redis_service.release_conversation_lock(conv_id, lock_token)
+        # Always try to release the lock if we got one
+        if conv_id and lock_token:
+            try:
+                logger.info(
+                    "Releasing the conversation lock for conv_id=%s", conv_id
+                )
+                redis_service.release_conversation_lock(conv_id, lock_token)
+            except ConversationLockError as e:
+                logger.warning(
+                    "Failed to release conversation lock for conv_id=%s: %s",
+                    conv_id,
+                    e,
+                )
 
 
 @app.post("/upload_pdf")
 async def upload_pdf(pdf_name: str, collection_name: str):
     """
-    Upload the pdf for chatting.
+    Upload the pdf for chatting: parse PDF and store into Milvus.
     """
     vector_store = MilvusStoreHandler(collection_name=collection_name)
     pdf_path = f"pdfs/{pdf_name}"
 
-    parser = PDFParser(pdf_path)
-    pages = parser.parse_pdf()
-    print(f"Total pages parsed: {len(pages)}")
+    try:
+        parser = PDFParser(pdf_path)
+        pages = parser.parse_pdf()
+        logger.info("Total pages parsed from PDF '%s': %d", pdf_path, len(pages))
 
-    # Continuous full text of the book
-    for i in range(1, len(pages)):
-        long_text = pages[i].get("text")
-        vector_store.store_in_milvus(text=long_text)
-        print(f"Uploaded page: {i} to the vectordb")
+        for i in range(1, len(pages)):
+            long_text = pages[i].get("text")
+            vector_store.store_in_milvus(text=long_text)
+            logger.info("Uploaded page %d to the vector DB", i)
+    except PDFParseError as e:
+        logger.error("PDF parsing error for '%s': %s", pdf_path, e)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error_type": "PDF_PARSE_ERROR",
+                "message": str(e),
+            },
+        )
+    except (EmbeddingError, MilvusError) as e:
+        logger.exception("Vector store/embedding error during /upload_pdf: %s", e)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error_type": "VECTOR_STORE_ERROR",
+                "message": str(e),
+            },
+        )
+    except Exception as e:
+        logger.exception("Unexpected error during /upload_pdf: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while uploading PDF.",
+        )
+
+    return {"message": "PDF uploaded and stored in vector DB."}
 
 
 @app.post("/clear_post_gres")
 async def clear_db():
     """
-    Clear the post gres database
+    Clear the postgres database.
     """
-    with Session(engine) as session:
-        for table in reversed(Base.metadata.sorted_tables):
-            logger.info(f"Deleting from {table.name}...")
-            session.execute(table.delete())
-        session.commit()
-        logger.info("All tables cleared.")
+    try:
+        with Session(engine) as session:
+            for table in reversed(Base.metadata.sorted_tables):
+                logger.info("Deleting from %s...", table.name)
+                session.execute(table.delete())
+            session.commit()
+            logger.info("All tables cleared.")
+    except SQLAlchemyError as e:
+        logger.exception("Database error while clearing Postgres: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Database error while clearing Postgres.",
+        )
+    except Exception as e:
+        logger.exception("Unexpected error while clearing Postgres: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while clearing Postgres.",
+        )
+
     return {"message": "All tables are cleared"}
 
 
 @app.post("/clear_cache")
 async def clear_cache():
-    cache_store = get_cache_store()
-    cache_store.delete_collection()
+    try:
+        cache_store = get_cache_store()
+        cache_store.delete_collection()
+    except CacheError as e:
+        logger.exception("Error while clearing cache collection: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "CACHE_ERROR",
+                "message": str(e),
+            },
+        )
+    except Exception as e:
+        logger.exception("Unexpected error while clearing cache: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while clearing cache.",
+        )
     return {"message": "cleared the cache_store"}
 
 
 @app.post("/debug_database")
 async def debug_db(user_id: str = None, conv_id: UUID = None):
     """
-    Print the database texts for debugging
+    Print the database texts for debugging.
     """
-    db_debugger = DBInspector()
-    print("Printing users")
-    db_debugger.print_users()
-    print("Printing conversations")
-    db_debugger.print_conversations(user_external_id=user_id)
-    print(f"Printing Messages from conversation: {conv_id}")
-    db_debugger.print_messages(conversation_id=conv_id)
+    try:
+        db_debugger = DBInspector()
+        print("Printing users")
+        db_debugger.print_users()
+        print("Printing conversations")
+        db_debugger.print_conversations(user_external_id=user_id)
+        print(f"Printing Messages from conversation: {conv_id}")
+        db_debugger.print_messages(conversation_id=conv_id)
+    except Exception as e:
+        logger.exception("Error while debugging database: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while debugging database.",
+        )
     return {"message": "Details are printed"}
 
 
 @app.post("/view_milvus_store")
 async def view_store():
-    milvus_store = MilvusStoreHandler()
-    milvus_store.view_collection(collection_name=config.COLLECTION_NAME)
+    try:
+        milvus_store = MilvusStoreHandler()
+        milvus_store.view_collection(collection_name=config.COLLECTION_NAME)
+    except MilvusError as e:
+        logger.exception("Error while viewing Milvus store: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "VECTOR_STORE_ERROR",
+                "message": str(e),
+            },
+        )
+    except Exception as e:
+        logger.exception("Unexpected error while viewing Milvus store: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while viewing Milvus store.",
+        )
 
     return {"message": "the details are printed"}

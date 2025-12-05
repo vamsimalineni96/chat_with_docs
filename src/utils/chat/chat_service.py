@@ -1,5 +1,7 @@
 import time
+
 from src.utils import config
+from src.utils.errors import CacheError, ConversationServiceError, InferenceError
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import get_cache_store
 from src.utils.services.conversation_store import get_conversation_service
@@ -10,17 +12,31 @@ converstion_service = get_conversation_service()
 
 
 def cache_output(payload, q_embed):
-    cached = cache_service.search_similar(
-        query=payload.question,
-        q_vec=q_embed,
-        model_name=config.LLM_MODEL,
-        prompt_version=config.PROMPT_VERSION,
-        min_similarity=0.9,
-    )
+    """
+    Try to fetch a cached answer.
+
+    Raises:
+        CacheError: if cache lookup fails unexpectedly.
+    """
+    try:
+        cached = cache_service.search_similar(
+            query=payload.question,
+            q_vec=q_embed,
+            model_name=config.LLM_MODEL,
+            prompt_version=config.PROMPT_VERSION,
+            min_similarity=0.9,
+        )
+    except CacheError:
+        # Already wrapped at Milvus layer
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error while searching cache: %s", e)
+        raise CacheError("Unexpected error while searching cache.") from e
 
     if cached:
         logger.info("Returning the cached answer")
         return cached["answer_text"]
+    return None
 
 
 def rag_output(
@@ -28,44 +44,90 @@ def rag_output(
     db,
     conversation,
     user,
-    query_vec
+    query_vec,
 ):
-    # Generating the answer based on the recent messages,and retrieved context.
-    t0=time.perf_counter()
+    """
+    Run full RAG pipeline:
+      - Load recent messages
+      - Save user message
+      - Run RAG (Milvus + NIM)
+      - Save assistant message
+      - Log timing metrics
+
+    Raises:
+        ConversationServiceError: for DB issues.
+        InferenceError: for RAG/LLM/Milvus issues.
+    """
+    t0 = time.perf_counter()
+
     logger.info("Accessing recent messages from the database")
-    t_db_start = time.perf_counter()
-    recent_msgs = converstion_service.get_recent_messages(
-        db, conversation, limit=20, user=user
-    )
-    history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
+    try:
+        t_db_start = time.perf_counter()
+        recent_msgs = converstion_service.get_recent_messages(
+            db, conversation, limit=20, user=user
+        )
+        history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
+    except ConversationServiceError:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error while loading recent messages: %s", e)
+        raise ConversationServiceError("Failed to load recent messages.") from e
 
     logger.info("Storing the new message into the database")
-    converstion_service.add_message(
-        db,
-        conversation=conversation,
-        user=user,
-        role="user",
-        content=payload.question,
-    )
-    t_db_end = time.perf_counter()
+    try:
+        converstion_service.add_message(
+            db,
+            conversation=conversation,
+            user=user,
+            role="user",
+            content=payload.question,
+        )
+        t_db_end = time.perf_counter()
+    except ConversationServiceError:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error while storing user message: %s", e)
+        raise ConversationServiceError("Failed to store user message.") from e
 
-    answer, t_milvus_start, t_milvus_end, t_llm_start, t_llm_end = answer_question(
-        question=payload.question,
-        query_vec= query_vec,
-        collection_name=payload.collection_name,
-        history=history_for_llm,
-    )
+    logger.info("Running RAG pipeline to generate answer")
+    try:
+        (
+            answer,
+            t_milvus_start,
+            t_milvus_end,
+            t_llm_start,
+            t_llm_end,
+        ) = answer_question(
+            question=payload.question,
+            query_vec=query_vec,
+            collection_name=payload.collection_name,
+            history=history_for_llm,
+        )
+    except InferenceError:
+        # Already wrapped appropriately
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error from RAG pipeline: %s", e)
+        raise InferenceError("Unexpected error from RAG pipeline.") from e
+
     logger.info("Storing the chatbot's reply to the user query")
-    t_save_start = time.perf_counter()
-    converstion_service.add_message(
-        db,
-        conversation=conversation,
-        user=user,
-        role="assistant",
-        content=answer,
-    )
-    t_save_end = time.perf_counter()
-    t1=time.perf_counter()
+    try:
+        t_save_start = time.perf_counter()
+        converstion_service.add_message(
+            db,
+            conversation=conversation,
+            user=user,
+            role="assistant",
+            content=answer,
+        )
+        t_save_end = time.perf_counter()
+    except ConversationServiceError:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error while storing assistant message: %s", e)
+        raise ConversationServiceError("Failed to store assistant message.") from e
+
+    t1 = time.perf_counter()
 
     logger.info(
         "RAG_PIPELINE_METRICS | conv_id=%s | domain=%s | "

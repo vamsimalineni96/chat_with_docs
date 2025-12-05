@@ -1,12 +1,13 @@
 import time
 import uuid
+
 import redis
 
 from src.utils import config
+from src.utils.errors import RedisLockError, ConversationLockError
+from src.utils.services.logger_config import logger
 
 
-class ConversationLockError(Exception):
-    pass
 
 
 class ConversationLock:
@@ -14,7 +15,13 @@ class ConversationLock:
     DEFAULT_TTL_SECONDS = 60
 
     def __init__(self, redis_url: str = config.REDIS_URL):
-        self.redis_client = redis.Redis.from_url(redis_url, decode_responses=True)
+        try:
+            self.redis_client = redis.Redis.from_url(
+                redis_url, decode_responses=True
+            )
+        except Exception as e:
+            logger.exception("Failed to connect to Redis: %s", e)
+            raise RedisLockError("Failed to connect to Redis for conversation locking.") from e
 
     def _lock_key(self, conversation_id: str) -> str:
         return f"{self.LOCK_PREFIX}{conversation_id}"
@@ -36,49 +43,71 @@ class ConversationLock:
         key = self._lock_key(conversation_id)
         token = str(uuid.uuid4())
 
-        if not wait:
-            acquired = self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
-            if not acquired:
-                raise ConversationLockError("Lock already held for this conversation.")
-            return token
-
-        # Wait mode: retry until timeout
-        deadline = time.time() + wait_timeout
-        while time.time() < deadline:
-            acquired = self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
-            if acquired:
+        try:
+            if not wait:
+                acquired = self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
+                if not acquired:
+                    raise ConversationLockError(
+                        "Lock already held for this conversation."
+                    )
                 return token
-            time.sleep(wait_interval)
 
-        raise ConversationLockError("Timeout while waiting for conversation lock.")
+            deadline = time.time() + wait_timeout
+            while time.time() < deadline:
+                acquired = self.redis_client.set(key, token, nx=True, ex=ttl_seconds)
+                if acquired:
+                    return token
+                time.sleep(wait_interval)
+
+            raise ConversationLockError(
+                "Timeout while waiting for conversation lock."
+            )
+        except ConversationLockError:
+            raise
+        except redis.RedisError as e:
+            logger.exception("Redis error while acquiring conversation lock: %s", e)
+            raise ConversationLockError("Redis error while acquiring lock.") from e
+        except Exception as e:
+            logger.exception("Unexpected error while acquiring conversation lock: %s", e)
+            raise ConversationLockError("Unexpected error while acquiring lock.") from e
 
     def release_conversation_lock(self, conversation_id: str, token: str) -> None:
         """
         Release the lock only if the token matches (to avoid releasing someone else's lock).
         """
         key = self._lock_key(conversation_id)
-        with self.redis_client.pipeline() as pipe:
-            while True:
-                try:
-                    pipe.watch(key)
-                    current_token = pipe.get(key)
-                    if current_token is None:
-                        pipe.unwatch()
-                        return
-                    if current_token != token:
-                        pipe.unwatch()
-                        raise ConversationLockError("Lock token mismatch.")
+        try:
+            with self.redis_client.pipeline() as pipe:
+                while True:
+                    try:
+                        pipe.watch(key)
+                        current_token = pipe.get(key)
+                        if current_token is None:
+                            pipe.unwatch()
+                            return
+                        if current_token != token:
+                            pipe.unwatch()
+                            raise ConversationLockError("Lock token mismatch.")
 
-                    pipe.multi()
-                    pipe.delete(key)
-                    pipe.execute()
-                    return
-                except redis.WatchError:
-                    # value changed between WATCH and EXEC, retry
-                    continue
+                        pipe.multi()
+                        pipe.delete(key)
+                        pipe.execute()
+                        return
+                    except redis.WatchError:
+                        # value changed between WATCH and EXEC, retry
+                        continue
+        except ConversationLockError:
+            raise
+        except redis.RedisError as e:
+            logger.exception("Redis error while releasing conversation lock: %s", e)
+            raise ConversationLockError("Redis error while releasing lock.") from e
+        except Exception as e:
+            logger.exception("Unexpected error while releasing conversation lock: %s", e)
+            raise ConversationLockError("Unexpected error while releasing lock.") from e
 
 
 _redis_store_instance = None
+
 
 def get_redis_lock():
     global _redis_store_instance

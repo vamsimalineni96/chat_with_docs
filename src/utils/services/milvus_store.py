@@ -1,9 +1,10 @@
 import uuid
 from typing import List, Dict, Any, Optional
-from pymilvus import MilvusClient, DataType
 from datetime import datetime
 
+from pymilvus import MilvusClient, DataType
 from src.utils import config
+from src.utils.errors import MilvusError, CacheError, EmbeddingError
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
 
@@ -18,6 +19,9 @@ class MilvusStoreHandler:
     ) -> None:
         """
         Wrapper around MilvusClient plus embedding + PDF utilities.
+
+        Raises:
+            MilvusError: if the client or collection initialization fails.
         """
         self.uri = uri or config.MILVUS_URI
         self.token = token or getattr(config, "MILVUS_TOKEN", None)
@@ -25,16 +29,26 @@ class MilvusStoreHandler:
         self.embed_dim = config.EMBED_DIM
         self.top_k = config.TOP_K
 
-        self.client = self._get_milvus_client()
+        try:
+            self.client = self._get_milvus_client()
+        except Exception as e:
+            logger.exception("Failed to initialize Milvus client: %s", e)
+            raise MilvusError("Failed to initialize Milvus client.") from e
+
         self.embedder = embedder or EmbeddingHandler()
 
-        # Ensure collection exists and is loaded
-        self.ensure_collection()
+        try:
+            self.ensure_collection()
+        except Exception as e:
+            logger.exception(
+                "Failed to ensure Milvus collection '%s': %s",
+                self.collection_name,
+                e,
+            )
+            raise MilvusError("Failed to initialize Milvus collection.") from e
 
     def _get_milvus_client(self) -> MilvusClient:
-        """
-        Return a MilvusClient pointing to the standalone server.
-        """
+        """Return a MilvusClient pointing to the standalone server."""
         if self.token:
             return MilvusClient(uri=self.uri, token=self.token)
         return MilvusClient(uri=self.uri)
@@ -42,44 +56,54 @@ class MilvusStoreHandler:
     def ensure_collection(self) -> None:
         """
         Create the collection and index if it doesn't exist, then load it.
+
+        Raises:
+            MilvusError: on Milvus failures.
         """
-        if not self.client.has_collection(self.collection_name):
-            schema = MilvusClient.create_schema(
-                auto_id=False,
-                enable_dynamic_field=True,  # store extra metadata in $meta
-            )
-            schema.add_field(
-                field_name="id",
-                datatype=DataType.VARCHAR,
-                is_primary=True,
-                max_length=64,
-            )
-            schema.add_field(
-                field_name="embedding",
-                datatype=DataType.FLOAT_VECTOR,
-                dim=self.embed_dim,
-            )
+        try:
+            if not self.client.has_collection(self.collection_name):
+                schema = MilvusClient.create_schema(
+                    auto_id=False,
+                    enable_dynamic_field=True,  # store extra metadata in $meta
+                )
+                schema.add_field(
+                    field_name="id",
+                    datatype=DataType.VARCHAR,
+                    is_primary=True,
+                    max_length=64,
+                )
+                schema.add_field(
+                    field_name="embedding",
+                    datatype=DataType.FLOAT_VECTOR,
+                    dim=self.embed_dim,
+                )
 
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                schema=schema,
-                consistency_level="Strong",
-            )
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    schema=schema,
+                    consistency_level="Strong",
+                )
 
-            index_params = self.client.prepare_index_params()
-            index_params.add_index(
-                field_name="embedding",
-                index_type="AUTOINDEX",
-                metric_type="COSINE",
-            )
+                index_params = self.client.prepare_index_params()
+                index_params.add_index(
+                    field_name="embedding",
+                    index_type="AUTOINDEX",
+                    metric_type="COSINE",
+                )
 
-            self.client.create_index(
-                collection_name=self.collection_name,
-                index_params=index_params,
-            )
+                self.client.create_index(
+                    collection_name=self.collection_name,
+                    index_params=index_params,
+                )
 
-        # Always make sure collection is loaded before use
-        self.client.load_collection(collection_name=self.collection_name)
+            self.client.load_collection(collection_name=self.collection_name)
+        except Exception as e:
+            logger.exception(
+                "Error ensuring/creating Milvus collection '%s': %s",
+                self.collection_name,
+                e,
+            )
+            raise MilvusError("Failed to ensure Milvus collection.") from e
 
     def store_in_milvus(
         self,
@@ -93,7 +117,9 @@ class MilvusStoreHandler:
         Ingest a single long text into Milvus:
         text -> chunks -> embeddings -> Milvus.
 
-        doc_id and source are optional metadata fields.
+        Raises:
+            EmbeddingError: on embedding failures.
+            MilvusError: on Milvus insert/flush issues.
         """
         self.ensure_collection()
 
@@ -102,47 +128,62 @@ class MilvusStoreHandler:
         if source is None:
             source = "inline_text"
 
-        # Use your existing embedder to get vectors + chunk strings
-        vectors, chunks = self.embedder.get_document_embeddings(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-            long_text=text,
-        )
+        try:
+            vectors, chunks = self.embedder.get_document_embeddings(
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+                long_text=text,
+            )
+        except EmbeddingError:
+            # Let callers know embedding failed specifically
+            raise
+        except Exception as e:
+            logger.exception("Unexpected error while embedding document: %s", e)
+            raise EmbeddingError("Unexpected error while embedding document.") from e
 
         if len(vectors) != len(chunks):
-            raise ValueError(
+            raise MilvusError(
                 f"Mismatch between vectors ({len(vectors)}) and chunks ({len(chunks)})"
             )
 
         BATCH = 32
         total = len(chunks)
-        for i in range(0, total, BATCH):
-            batch_vectors = vectors[i : i + BATCH]
-            batch_chunks = chunks[i : i + BATCH]
+        try:
+            for i in range(0, total, BATCH):
+                batch_vectors = vectors[i : i + BATCH]
+                batch_chunks = chunks[i : i + BATCH]
 
-            rows: List[Dict[str, Any]] = []
-            for order, (vec, chunk_text) in enumerate(
-                zip(batch_vectors, batch_chunks), start=i
-            ):
-                rows.append(
-                    {
-                        "id": str(uuid.uuid4()),
-                        "embedding": vec,
-                        "doc_id": doc_id,
-                        "source": source,
-                        "chunk_order": order,
-                        "text": chunk_text,
-                    }
+                rows: List[Dict[str, Any]] = []
+                for order, (vec, chunk_text) in enumerate(
+                    zip(batch_vectors, batch_chunks), start=i
+                ):
+                    rows.append(
+                        {
+                            "id": str(uuid.uuid4()),
+                            "embedding": vec,
+                            "doc_id": doc_id,
+                            "source": source,
+                            "chunk_order": order,
+                            "text": chunk_text,
+                        }
+                    )
+
+                self.client.insert(
+                    collection_name=self.collection_name,
+                    data=rows,
+                )
+                logger.info(
+                    "Indexed %d / %d chunks into Milvus collection '%s'",
+                    min(i + len(batch_chunks), total),
+                    total,
+                    self.collection_name,
                 )
 
-            self.client.insert(
-                collection_name=self.collection_name,
-                data=rows,
-            )
-            print(f"Indexed {min(i + len(batch_chunks), total)} / {total} chunks")
-
-        self.client.flush(self.collection_name)
-        print("Finished indexing.")
+            self.client.flush(self.collection_name)
+            logger.info("Finished indexing document into Milvus.")
+        except Exception as e:
+            logger.exception("Milvus error during store_in_milvus: %s", e)
+            raise MilvusError("Failed to store document in Milvus.") from e
 
     def search_similar_chunks(
         self,
@@ -150,30 +191,33 @@ class MilvusStoreHandler:
         top_k: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Embed the query with NIM and search similar chunks in Milvus.
-        Returns a list of dicts with id, score, doc_id, source, chunk_order, text.
+        Search similar chunks in Milvus using a precomputed query_vec.
+
+        Raises:
+            MilvusError: if search fails.
         """
         if top_k is None:
             top_k = self.top_k
 
-        self.client.load_collection(collection_name=self.collection_name)
+        try:
+            self.client.load_collection(collection_name=self.collection_name)
 
-        # Embed query with input_type="query"
-        # query_vec = self.embedder.get_embedding(text=query)
+            res = self.client.search(
+                collection_name=self.collection_name,
+                data=[query_vec],
+                anns_field="embedding",
+                limit=top_k,
+                output_fields=["doc_id", "source", "chunk_order", "text"],
+                search_params={
+                    "metric_type": "COSINE",
+                    "params": {"nprobe": 16},
+                },
+            )
+            hits = res[0]  # single query
+        except Exception as e:
+            logger.exception("Milvus search error in search_similar_chunks: %s", e)
+            raise MilvusError("Failed to search similar chunks in Milvus.") from e
 
-        res = self.client.search(
-            collection_name=self.collection_name,
-            data=[query_vec],
-            anns_field="embedding",
-            limit=top_k,
-            output_fields=["doc_id", "source", "chunk_order", "text"],
-            search_params={
-                "metric_type": "COSINE",
-                "params": {"nprobe": 16},
-            },
-        )
-
-        hits = res[0]  # single query
         results: List[Dict[str, Any]] = []
         for h in hits:
             row = {
@@ -190,46 +234,65 @@ class MilvusStoreHandler:
     def delete_collection(self) -> None:
         """
         Drop the configured collection after releasing it from memory.
+
+        Raises:
+            MilvusError: if drop fails.
         """
         collection_name = self.collection_name
 
-        state = self.client.get_load_state(collection_name=collection_name)
-        if state.get("state") == "Loaded":
-            print(f"Releasing collection '{collection_name}' from memory...")
-            self.client.release_collection(collection_name=collection_name)
-            print("Collection released.")
+        try:
+            state = self.client.get_load_state(collection_name=collection_name)
+            if state.get("state") == "Loaded":
+                logger.info(
+                    "Releasing collection '%s' from memory before dropping...",
+                    collection_name,
+                )
+                self.client.release_collection(collection_name=collection_name)
 
-        print(f"Dropping collection '{collection_name}'...")
-        self.client.drop_collection(collection_name=collection_name)
-        print(f"Collection '{collection_name}' dropped successfully.")
+            logger.info("Dropping collection '%s'...", collection_name)
+            self.client.drop_collection(collection_name=collection_name)
+            logger.info("Collection '%s' dropped successfully.", collection_name)
+        except Exception as e:
+            logger.exception("Error while dropping Milvus collection '%s': %s", collection_name, e)
+            raise MilvusError("Failed to drop Milvus collection.") from e
 
     def view_collection(self, collection_name: Optional[str]) -> None:
         """
         Print a small sample of rows from the given (or default) collection.
+
+        Raises:
+            MilvusError: on errors querying Milvus.
         """
         collection_name = collection_name or self.collection_name
-        collection_list = self.client.list_collections()
-        print(f"List of collections: {collection_list}")
 
-        if collection_name in collection_list:
-            self.client.load_collection(collection_name=collection_name)
-            rows = self.client.query(
-                collection_name=collection_name,
-                filter="",  # no filter -> everything
-                output_fields=["id", "doc_id", "source", "chunk_order", "text"],
-                limit=100,  # just peek at first 5
+        try:
+            collection_list = self.client.list_collections()
+            print(f"List of collections: {collection_list}")
+
+            if collection_name in collection_list:
+                self.client.load_collection(collection_name=collection_name)
+                rows = self.client.query(
+                    collection_name=collection_name,
+                    filter="",  # no filter -> everything
+                    output_fields=["id", "doc_id", "source", "chunk_order", "text"],
+                    limit=100,
+                )
+
+                for r in rows:
+                    print("-" * 80)
+                    print("id:        ", r.get("id"))
+                    print("doc_id:    ", r.get("doc_id"))
+                    print("source:    ", r.get("source"))
+                    print("order:     ", r.get("chunk_order"))
+                    print("text[0:200]:")
+                    print((r.get("text") or "")[:200], "...")
+            else:
+                print("collection is empty")
+        except Exception as e:
+            logger.exception(
+                "Error while viewing Milvus collection '%s': %s", collection_name, e
             )
-
-            for r in rows:
-                print("-" * 80)
-                print("id:        ", r.get("id"))
-                print("doc_id:    ", r.get("doc_id"))
-                print("source:    ", r.get("source"))
-                print("order:     ", r.get("chunk_order"))
-                print("text[0:200]:")
-                print((r.get("text") or "")[:200], "...")
-        else:
-            print("collection is empty")
+            raise MilvusError("Failed to view Milvus collection.") from e
 
 
 class CacheStoreHandler:
@@ -249,73 +312,83 @@ class CacheStoreHandler:
     ) -> None:
         """
         Wrapper around MilvusClient + embedding for QA cache.
+
+        Raises:
+            MilvusError: if cache collection fails to initialize.
         """
         self.uri = uri or config.MILVUS_URI
         self.token = token or getattr(config, "MILVUS_TOKEN", None)
-
-        # use a separate collection from your document chunks
         self.collection_name = collection_name or config.CACHE_COLLECTION_NAME
-
         self.embed_dim = config.EMBED_DIM
         self.top_k = getattr(config, "TOP_K", 5)
 
-        self.client = self._get_milvus_client()
+        try:
+            self.client = self._get_milvus_client()
+        except Exception as e:
+            logger.exception("Failed to initialize Milvus cache client: %s", e)
+            raise MilvusError("Failed to initialize Milvus cache client.") from e
+
         self.embedder = embedder or EmbeddingHandler()
 
-        # Make sure the cache collection exists and is loaded
-        logger.info("Ensuring cache store has the collection")
-        self.ensure_collection()
+        logger.info("Ensuring cache store has the collection '%s'", self.collection_name)
+        try:
+            self.ensure_collection()
+        except Exception as e:
+            logger.exception(
+                "Failed to ensure cache collection '%s': %s",
+                self.collection_name,
+                e,
+            )
+            raise MilvusError("Failed to initialize cache collection.") from e
 
     def _get_milvus_client(self) -> MilvusClient:
-        """
-        Return a MilvusClient pointing to the standalone server.
-        """
         if self.token:
             return MilvusClient(uri=self.uri, token=self.token)
         return MilvusClient(uri=self.uri)
 
     def ensure_collection(self) -> None:
-        """
-        Create the cache collection and index if it doesn't exist, then load it.
-        """
-        if not self.client.has_collection(self.collection_name):
-            schema = MilvusClient.create_schema(
-                auto_id=False,
-                enable_dynamic_field=True,  # store extra metadata in $meta
-            )
-            schema.add_field(
-                field_name="id",
-                datatype=DataType.VARCHAR,
-                is_primary=True,
-                max_length=64,
-            )
-            schema.add_field(
-                field_name="embedding",
-                datatype=DataType.FLOAT_VECTOR,
-                dim=self.embed_dim,
-            )
+        """Create the cache collection and index if it doesn't exist, then load it."""
+        try:
+            if not self.client.has_collection(self.collection_name):
+                schema = MilvusClient.create_schema(
+                    auto_id=False,
+                    enable_dynamic_field=True,
+                )
+                schema.add_field(
+                    field_name="id",
+                    datatype=DataType.VARCHAR,
+                    is_primary=True,
+                    max_length=64,
+                )
+                schema.add_field(
+                    field_name="embedding",
+                    datatype=DataType.FLOAT_VECTOR,
+                    dim=self.embed_dim,
+                )
 
-            self.client.create_collection(
-                collection_name=self.collection_name,
-                schema=schema,
-                consistency_level="Strong",
-            )
+                self.client.create_collection(
+                    collection_name=self.collection_name,
+                    schema=schema,
+                    consistency_level="Strong",
+                )
 
-            index_params = self.client.prepare_index_params()
-            index_params.add_index(
-                field_name="embedding",
-                index_type="AUTOINDEX",
-                metric_type="COSINE",
-            )
+                index_params = self.client.prepare_index_params()
+                index_params.add_index(
+                    field_name="embedding",
+                    index_type="AUTOINDEX",
+                    metric_type="COSINE",
+                )
 
-            self.client.create_index(
-                collection_name=self.collection_name,
-                index_params=index_params,
-            )
+                self.client.create_index(
+                    collection_name=self.collection_name,
+                    index_params=index_params,
+                )
 
-        # Always make sure collection is loaded before use
-        logger.info(f"Loading the cache collection: {self.collection_name}")
-        self.client.load_collection(collection_name=self.collection_name)
+            logger.info("Loading the cache collection: %s", self.collection_name)
+            self.client.load_collection(collection_name=self.collection_name)
+        except Exception as e:
+            logger.exception("Error ensuring cache collection '%s': %s", self.collection_name, e)
+            raise MilvusError("Failed to ensure cache collection.") from e
 
     def put_entry(
         self,
@@ -331,45 +404,42 @@ class CacheStoreHandler:
     ) -> str:
         """
         Store a QA cache entry: (question embedding + answer + metadata).
-        Returns the new entry id.
+
+        Raises:
+            CacheError: if insert fails.
         """
         self.ensure_collection()
-
-        # Embed the question for semantic lookup
-        # q_vec = self.embedder.get_embedding(text=question_text)
         entry_id = str(uuid.uuid4())
 
         row: Dict[str, Any] = {
             "id": entry_id,
             "embedding": query_vec,
-            # query side
             "question_text": question_text,
             "question_norm": question_text.strip().lower(),
-            # answer side
             "answer_text": answer_text,
-            # retrieval context
             "context_chunk_ids": context_chunk_ids,
-            # generation config
             "model_name": model_name,
             "prompt_version": prompt_version,
             "temperature": temperature,
             "max_tokens": max_tokens,
-            # bookkeeping
             "created_at": datetime.utcnow().isoformat(),
             "hit_count": 0,
             "last_hit_at": None,
         }
 
         if extra_metadata:
-            # Allow caller to stuff anything else into dynamic meta
             row.update(extra_metadata)
 
-        self.client.insert(
-            collection_name=self.collection_name,
-            data=[row],
-        )
-        self.client.flush(self.collection_name)
-        return entry_id
+        try:
+            self.client.insert(
+                collection_name=self.collection_name,
+                data=[row],
+            )
+            self.client.flush(self.collection_name)
+            return entry_id
+        except Exception as e:
+            logger.exception("Error inserting cache entry into Milvus: %s", e)
+            raise CacheError("Failed to store cache entry.") from e
 
     def search_similar(
         self,
@@ -383,49 +453,45 @@ class CacheStoreHandler:
         """
         Semantic QA cache lookup.
 
-        - Embeds `query`
-        - Vector search in cache collection
-        - Filters by model_name, prompt_version, style
-        - Enforces similarity threshold `min_similarity` (0-1)
-
-        Returns the best matching entry dict or None.
+        Raises:
+            CacheError: if search fails.
         """
         if top_k is None:
             top_k = self.top_k
 
-        self.client.load_collection(collection_name=self.collection_name)
+        try:
+            self.client.load_collection(collection_name=self.collection_name)
 
-        # q_vec = self.embedder.get_embedding(text=query)
+            res = self.client.search(
+                collection_name=self.collection_name,
+                data=[q_vec],
+                anns_field="embedding",
+                limit=top_k,
+                output_fields=[
+                    "question_text",
+                    "question_norm",
+                    "answer_text",
+                    "context_chunk_ids",
+                    "model_name",
+                    "prompt_version",
+                    "temperature",
+                    "max_tokens",
+                    "created_at",
+                    "hit_count",
+                    "last_hit_at",
+                ],
+                search_params={
+                    "metric_type": "COSINE",
+                    "params": {"nprobe": 16},
+                },
+            )
+            hits = res[0]
+        except Exception as e:
+            logger.exception("Milvus cache search error: %s", e)
+            raise CacheError("Failed to search cache collection.") from e
 
-        res = self.client.search(
-            collection_name=self.collection_name,
-            data=[q_vec],
-            anns_field="embedding",
-            limit=top_k,
-            output_fields=[
-                "question_text",
-                "question_norm",
-                "answer_text",
-                "context_chunk_ids",
-                "model_name",
-                "prompt_version",
-                "temperature",
-                "max_tokens",
-                "created_at",
-                "hit_count",
-                "last_hit_at",
-            ],
-            search_params={
-                "metric_type": "COSINE",
-                "params": {"nprobe": 16},
-            },
-        )
-
-        hits = res[0]  # single query
         best: Optional[Dict[str, Any]] = None
-
         for h in hits:
-            # Milvus with COSINE typically uses distance = 1 - cosine_similarity
             distance = h["distance"]
             similarity = 1.0 - float(distance)
 
@@ -446,9 +512,11 @@ class CacheStoreHandler:
                 "last_hit_at": h.get("last_hit_at"),
             }
             logger.info(
-                f"[CACHE CANDIDATE] sim={similarity:.4f}, "
-                f"model={meta['model_name']}, prompt={meta['prompt_version']}, "
-                f"q='{meta['question_text']}'"
+                "[CACHE CANDIDATE] sim=%.4f, model=%s, prompt=%s, q='%s'",
+                similarity,
+                meta["model_name"],
+                meta["prompt_version"],
+                meta["question_text"],
             )
 
             if (
@@ -460,25 +528,28 @@ class CacheStoreHandler:
                 break
 
         if best is None:
-            logger.info(f"[CACHE MISS] no suitable entry for query='{query}'")
+            logger.info("[CACHE MISS] no suitable entry for query='%s'", query)
 
         return best
 
     def delete_collection(self) -> None:
-        """
-        Drop the cache collection (for resets / migrations).
-        """
+        """Drop the cache collection (for resets / migrations)."""
         collection_name = self.collection_name
+        try:
+            state = self.client.get_load_state(collection_name=collection_name)
+            if state.get("state") == "Loaded":
+                print(f"Releasing cache collection '{collection_name}' from memory...")
+                self.client.release_collection(collection_name=collection_name)
+                print("Collection released.")
 
-        state = self.client.get_load_state(collection_name=collection_name)
-        if state.get("state") == "Loaded":
-            print(f"Releasing cache collection '{collection_name}' from memory...")
-            self.client.release_collection(collection_name=collection_name)
-            print("Collection released.")
-
-        print(f"Dropping cache collection '{collection_name}'...")
-        self.client.drop_collection(collection_name=collection_name)
-        print(f"Cache collection '{collection_name}' dropped successfully.")
+            print(f"Dropping cache collection '{collection_name}'...")
+            self.client.drop_collection(collection_name=collection_name)
+            print(f"Cache collection '{collection_name}' dropped successfully.")
+        except Exception as e:
+            logger.exception(
+                "Error while dropping cache collection '%s': %s", collection_name, e
+            )
+            raise CacheError("Failed to drop cache collection.") from e
 
 
 _cache_store_instance = None

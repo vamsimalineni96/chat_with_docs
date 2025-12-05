@@ -6,9 +6,11 @@ from openai import (
     AuthenticationError,
     BadRequestError,
 )
-from src.utils.config import NVIDIA_BASE_URL, NVIDIA_API_KEY, EMBED_MODEL
-from src.utils.services.logger_config import logger
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+from src.utils.config import NVIDIA_BASE_URL, NVIDIA_API_KEY, EMBED_MODEL
+from src.utils.errors import EmbeddingError
+from src.utils.services.logger_config import logger
 
 
 class EmbeddingHandler:
@@ -16,6 +18,12 @@ class EmbeddingHandler:
         logger.info("Initializing EmbeddingHandler...")
 
     def get_embedding(self, text: str, input_type: str = "query"):
+        """
+        Get a single embedding vector.
+
+        Raises:
+            EmbeddingError: for any upstream or unexpected failure.
+        """
         try:
             client = OpenAI(api_key=NVIDIA_API_KEY, base_url=NVIDIA_BASE_URL)
 
@@ -27,46 +35,52 @@ class EmbeddingHandler:
             )
 
             embedding = response.data[0].embedding
-            logger.info(f"Successfully retrieved embedding of length {len(embedding)}")
+            logger.info("Successfully retrieved embedding of length %d", len(embedding))
             return embedding
-        
+
         except AuthenticationError as e:
             logger.error("Authentication with NVIDIA/OpenAI endpoint failed: %s", e)
-            raise
+            raise EmbeddingError(
+                "Authentication with NVIDIA/OpenAI endpoint failed while creating embedding."
+            ) from e
 
         except BadRequestError as e:
             logger.error("Bad request when creating embedding: %s", e)
-            logger.debug("Offending text: %r", text[:200])
-            raise
+            logger.debug("Offending text (first 200 chars): %r", text[:200])
+            raise EmbeddingError("Bad request while creating embedding.") from e
 
-        # Rate limits – very common under load
         except RateLimitError as e:
             logger.warning("Rate limit hit while creating embedding: %s", e)
-            # Let caller decide whether to backoff/retry
-            raise
+            raise EmbeddingError("Rate limit hit while creating embedding.") from e
 
-        # Network / DNS / timeout issues – common under heavy load
         except APIConnectionError as e:
             logger.error("Connection error while calling embeddings API: %s", e)
-            raise
+            raise EmbeddingError("Connection error calling embeddings API.") from e
 
-        # 5xx or generic API failures
         except APIError as e:
             status = getattr(e, "status_code", None)
-            logger.error("APIError from embeddings endpoint (status=%s): %s", status, e)
-            raise
+            logger.error(
+                "APIError from embeddings endpoint (status=%s): %s", status, e
+            )
+            raise EmbeddingError("Upstream embedding API error.") from e
 
-        # Anything else – unexpected bug on our side
         except Exception as e:
             logger.exception("Unexpected error while creating embedding: %s", e)
-            raise
+            raise EmbeddingError("Unexpected error while creating embedding.") from e
 
     def get_document_embeddings(
         self, chunk_size: int, chunk_overlap: int, long_text: str
     ):
-        """Splits text into chunks and retrieves embeddings for each chunk."""
+        """
+        Splits text into chunks and retrieves embeddings for each chunk.
+
+        Raises:
+            EmbeddingError: if any chunk embedding fails.
+        """
         logger.info(
-            f"Splitting text into chunks with size {chunk_size} and overlap {chunk_overlap}"
+            "Splitting text into chunks with size %d and overlap %d",
+            chunk_size,
+            chunk_overlap,
         )
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
@@ -79,10 +93,9 @@ class EmbeddingHandler:
         embeddings = []
 
         for i, chunk in enumerate(text_chunks):
+            logger.info("Creating embedding for chunk %d/%d", i + 1, len(text_chunks))
             embedding = self.get_embedding(chunk, input_type="passage")
-            if embedding:
-                embeddings.append(embedding)
-                logger.info(f"Successfully retrieved embedding for chunk {i + 1}")
+            embeddings.append(embedding)
 
         logger.info("Completed generating embeddings for document.")
         return embeddings, text_chunks
