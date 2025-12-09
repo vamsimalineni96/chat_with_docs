@@ -110,8 +110,8 @@ class MilvusStoreHandler:
         text: str,
         doc_id: Optional[str] = None,
         source: Optional[str] = None,
-        chunk_size: int = 1000,
-        chunk_overlap: int = 150,
+        chunk_size: int = 600,
+        chunk_overlap: int = 120,
     ) -> None:
         """
         Ingest a single long text into Milvus:

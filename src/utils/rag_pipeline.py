@@ -9,6 +9,7 @@ from src.utils.errors import InferenceError
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
+from src.utils.services.chunk_ranking import NVidiaReranker
 
 
 def build_context(chunks: List[Dict[str, Any]]) -> str:
@@ -62,6 +63,7 @@ def answer_question(
     milvus_store = MilvusStoreHandler(collection_name=collection_name)
     cache_store = get_cache_store()
     nim_client = NIMClient()
+    nim_reranker = NVidiaReranker()
 
     logger.info("Retrieving context from Milvus DB")
     try:
@@ -83,8 +85,15 @@ def answer_question(
             t_milvus_start,
             t_milvus_end,
         )
+    
+    try:
+        reranked= nim_reranker.execute(question= question, retrieved_chunks= retrieved)
+    except Exception as e:
+        logger.exception(f"Failed to rerank the chunks: {e}")
+        raise InferenceError("Failed to rerank the chunks") from e 
 
-    context = build_context(retrieved)
+    logger.info("Building the context from the reranked chunks")
+    context = build_context(reranked)
     history_text = format_history_for_prompt(history, max_turns=6)
 
     try:
@@ -107,15 +116,15 @@ def answer_question(
 
     # If you want to re-enable cache writes, they should be wrapped similarly:
     # try:
-        # logger.info("Storing the conversation in the rag cache")
-        # cache_store.put_entry(
-        #     question_text=question,
-        #     query_vec=query_vec,
-        #     answer_text=answer,
-        #     context_chunk_ids=context_chunk_ids,
-        #     model_name=config.LLM_MODEL,
-        #     prompt_version=config.PROMPT_VERSION,
-        # )
+    # logger.info("Storing the conversation in the rag cache")
+    # cache_store.put_entry(
+    #     question_text=question,
+    #     query_vec=query_vec,
+    #     answer_text=answer,
+    #     context_chunk_ids=context_chunk_ids,
+    #     model_name=config.LLM_MODEL,
+    #     prompt_version=config.PROMPT_VERSION,
+    # )
     # except Exception as e:
     #     logger.exception("Failed to write to cache: %s", e)
     #     # non-fatal; don't raise

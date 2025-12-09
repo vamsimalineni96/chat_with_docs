@@ -57,3 +57,7 @@ class RAGPipelineError(AppError):
 class ConversationLockError(RedisLockError):
     """Raised when lock acquisition/release fails in a conversation-safe way."""
     pass
+
+class RerankError(AppError):
+    """Raised when there is an error in reranking"""
+    pass

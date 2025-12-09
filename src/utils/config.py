@@ -12,9 +12,11 @@ REDIS_URL = os.getenv("REDIS_URL")
 # NIM / NVIDIA config
 NVIDIA_API_KEY = os.environ["NVIDIA_API_KEY"]
 NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL")
+NVIDIA_RERANK_URL = os.getenv("NVIDIA_RERANK_URL")
 
 EMBED_MODEL = os.getenv("NVIDIA_EMBEDDING_MODEL")
 LLM_MODEL = os.getenv("NVIDIA_LLM_MODEL")
+RERANK_MODEL= os.getenv("RERANK_MODEL")
 TEMPERATURE = float(os.getenv("TEMPERATURE", 0.1))
 TOP_P = float(os.getenv("TOP_P", 0.7))
 MAX_TOKENS = int(os.getenv("MAX_TOKENS", 1024))
