@@ -1,7 +1,9 @@
 from uuid import UUID
+import asyncio
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from concurrent.futures import ThreadPoolExecutor
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -27,6 +29,8 @@ from src.utils.services.redis_lock import get_redis_lock, ConversationLockError
 from src.utils.db.database_debug import DBInspector
 from src.utils.db.database import get_db, Base, engine
 from src.utils.api.schemas import ChatRequest, ChatResponse
+from src.utils.api.background_tasks import upload_pdf
+from src.utils.api.task_registry import create_task, get_status
 
 conversation_service = get_conversation_service()
 redis_service = get_redis_lock()
@@ -41,6 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+executor = ThreadPoolExecutor(max_workers=4)
 
 @app.get("/health")
 async def health():
@@ -237,50 +242,16 @@ async def chat(
                 )
 
 
-@app.post("/upload_pdf")
-async def upload_pdf(pdf_name: str, collection_name: str):
-    """
-    Upload the pdf for chatting: parse PDF and store into Milvus.
-    """
-    vector_store = MilvusStoreHandler(collection_name=collection_name)
-    pdf_path = f"pdfs/{pdf_name}"
+@app.post("/upload_pdf_async")
+async def upload_pdf_async(pdf_name: str, collection_name: str):
+    task_id = create_task()
+    executor.submit(asyncio.run, upload_pdf(pdf_name, collection_name, task_id))
+    return {"message": "Processing started", "task_id": task_id}
 
-    try:
-        parser = PDFParser(pdf_path)
-        pages = parser.parse_pdf()
-        logger.info("Total pages parsed from PDF '%s': %d", pdf_path, len(pages))
 
-        for i in range(1, len(pages)):
-            long_text = pages[i].get("text")
-            vector_store.store_in_milvus(text=long_text)
-            logger.info("Uploaded page %d to the vector DB", i)
-    except PDFParseError as e:
-        logger.error("PDF parsing error for '%s': %s", pdf_path, e)
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "error_type": "PDF_PARSE_ERROR",
-                "message": str(e),
-            },
-        )
-    except (EmbeddingError, MilvusError) as e:
-        logger.exception("Vector store/embedding error during /upload_pdf: %s", e)
-        raise HTTPException(
-            status_code=502,
-            detail={
-                "error_type": "VECTOR_STORE_ERROR",
-                "message": str(e),
-            },
-        )
-    except Exception as e:
-        logger.exception("Unexpected error during /upload_pdf: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail="Unexpected error while uploading PDF.",
-        )
-
-    return {"message": "PDF uploaded and stored in vector DB."}
-
+@app.get("/task_status/{task_id}")
+def check_task_status(task_id: str):
+    return {"status": get_status(task_id)}
 
 @app.post("/clear_post_gres")
 async def clear_db():
@@ -377,3 +348,26 @@ async def view_store():
         )
 
     return {"message": "the details are printed"}
+
+@app.post("/clear_milvus")
+async def clear_milvus(name:str):
+    """Enter the name of the collection you want to delete"""
+    try:
+        milvus_store = MilvusStoreHandler(collection_name= name)
+        milvus_store.delete_collection()
+    except MilvusError as e:
+        logger.exception(f"Error while deleting Milvus collection: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error_type": "VECTOR_STORE_ERROR",
+                "message": str(e),
+            },
+        )
+    except Exception as e:
+        logger.exception("Unexpected error while deleting Milvus collection: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail="Unexpected error while deleting Milvus collection.",
+        )
+    return {"message": f"Collection: {name} is dropped"}
