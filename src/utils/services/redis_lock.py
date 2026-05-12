@@ -11,8 +11,8 @@ from src.utils.services.logger_config import logger
 
 
 class ConversationLock:
-    LOCK_PREFIX = "lock:conversation:"
-    DEFAULT_TTL_SECONDS = 60
+    LOCK_PREFIX = config.REDIS_LOCK_PREFIX
+    DEFAULT_TTL_SECONDS = config.REDIS_LOCK_TTL_SECONDS
 
     def __init__(self, redis_url: str = config.REDIS_URL):
         try:

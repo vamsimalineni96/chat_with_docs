@@ -1,3 +1,6 @@
+import os
+
+from src.utils import config
 from src.utils.services.milvus_store import MilvusStoreHandler
 from src.utils.services.pdf_parser import PDFParser
 from src.utils.services.logger_config import logger
@@ -9,7 +12,7 @@ from fastapi import HTTPException
 
 async def upload_pdf(pdf_name:str, collection_name:str, task_id):
     vector_store = MilvusStoreHandler(collection_name=collection_name)
-    pdf_path = f"pdfs/{pdf_name}"
+    pdf_path = os.path.join(config.PDF_DIR, pdf_name)
 
     try:
         parser = PDFParser(pdf_path)

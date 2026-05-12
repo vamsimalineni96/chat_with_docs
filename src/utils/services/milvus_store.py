@@ -3,6 +3,9 @@ from typing import List, Dict, Any, Optional
 from datetime import datetime
 
 from pymilvus import MilvusClient, DataType
+from langchain_milvus import Milvus, BM25BuiltInFunction
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from src.utils import config
 from src.utils.errors import MilvusError, CacheError, EmbeddingError
 from src.utils.services.embedder import EmbeddingHandler
@@ -10,6 +13,25 @@ from src.utils.services.logger_config import logger
 
 
 class MilvusStoreHandler:
+    """Hybrid (dense + BM25) Milvus store via langchain-milvus.
+
+    Schema (auto-created by langchain-milvus on first use):
+      - pk            : INT64 auto-generated primary key
+      - text          : VARCHAR (the chunk text; BM25 reads from this)
+      - dense         : FLOAT_VECTOR(EMBED_DIM) populated by NVIDIAEmbeddings
+      - sparse        : SPARSE_FLOAT_VECTOR populated by BM25BuiltInFunction
+      - + dynamic metadata fields (doc_id, source, chunk_order, ...)
+
+    Search is hybrid: dense + sparse with reciprocal-rank fusion. BM25 catches
+    exact term matches (proper nouns, IDs, jargon) that pure dense embeddings
+    miss; this is critical for sensitive/unseen documents where the embedder
+    has no domain knowledge to lean on.
+
+    Existing single-vector collections from the previous schema are NOT
+    compatible. You must drop the old collection and re-ingest. Use
+    POST /clear_milvus?name=<collection> via the API.
+    """
+
     def __init__(
         self,
         uri: Optional[str] = None,
@@ -17,109 +39,87 @@ class MilvusStoreHandler:
         collection_name: Optional[str] = None,
         embedder: Optional[EmbeddingHandler] = None,
     ) -> None:
-        """
-        Wrapper around MilvusClient plus embedding + PDF utilities.
-
-        Raises:
-            MilvusError: if the client or collection initialization fails.
-        """
         self.uri = uri or config.MILVUS_URI
         self.token = token or getattr(config, "MILVUS_TOKEN", None)
         self.collection_name = collection_name or config.COLLECTION_NAME
         self.embed_dim = config.EMBED_DIM
         self.top_k = config.TOP_K
 
+        self.embedder = embedder or EmbeddingHandler()
+
+        self._connection_args: Dict[str, Any] = {"uri": self.uri}
+        if self.token:
+            self._connection_args["token"] = self.token
+
         try:
-            self.client = self._get_milvus_client()
+            self.client = (
+                MilvusClient(uri=self.uri, token=self.token)
+                if self.token
+                else MilvusClient(uri=self.uri)
+            )
         except Exception as e:
             logger.exception("Failed to initialize Milvus client: %s", e)
             raise MilvusError("Failed to initialize Milvus client.") from e
 
-        self.embedder = embedder or EmbeddingHandler()
-
-        try:
-            self.ensure_collection()
-        except Exception as e:
-            logger.exception(
-                "Failed to ensure Milvus collection '%s': %s",
-                self.collection_name,
-                e,
-            )
-            raise MilvusError("Failed to initialize Milvus collection.") from e
-
-    def _get_milvus_client(self) -> MilvusClient:
-        """Return a MilvusClient pointing to the standalone server."""
-        if self.token:
-            return MilvusClient(uri=self.uri, token=self.token)
-        return MilvusClient(uri=self.uri)
+        # The langchain `Milvus` wrapper is lazily constructed on first use
+        # (see `_get_vector_store`). Keeping it lazy means admin operations
+        # like `delete_collection` and `view_collection` never trigger the
+        # langchain init — important when an existing collection has a stale
+        # schema (e.g. left over from a previous code version).
+        self._vector_store: Optional[Milvus] = None
 
     def ensure_collection(self) -> None:
         """
-        Create the collection and index if it doesn't exist, then load it.
-
-        Raises:
-            MilvusError: on Milvus failures.
+        No-op kept for backwards-compatible callers. Collection creation and
+        loading is handled by langchain-milvus on first add_texts / search.
         """
+        return None
+
+    def _get_vector_store(self) -> Milvus:
+        """
+        Build the langchain `Milvus` wrapper on first call. If the collection
+        already exists with an incompatible schema, this is where the failure
+        will surface — but only when something actually needs to read/write
+        vectors, not on routine admin paths.
+        """
+        if self._vector_store is not None:
+            return self._vector_store
+
         try:
-            if not self.client.has_collection(self.collection_name):
-                schema = MilvusClient.create_schema(
-                    auto_id=False,
-                    enable_dynamic_field=True,  # store extra metadata in $meta
-                )
-                schema.add_field(
-                    field_name="id",
-                    datatype=DataType.VARCHAR,
-                    is_primary=True,
-                    max_length=64,
-                )
-                schema.add_field(
-                    field_name="embedding",
-                    datatype=DataType.FLOAT_VECTOR,
-                    dim=self.embed_dim,
-                )
-
-                self.client.create_collection(
-                    collection_name=self.collection_name,
-                    schema=schema,
-                    consistency_level="Strong",
-                )
-
-                index_params = self.client.prepare_index_params()
-                index_params.add_index(
-                    field_name="embedding",
-                    index_type="AUTOINDEX",
-                    metric_type="COSINE",
-                )
-
-                self.client.create_index(
-                    collection_name=self.collection_name,
-                    index_params=index_params,
-                )
-
-            self.client.load_collection(collection_name=self.collection_name)
-        except Exception as e:
-            logger.exception(
-                "Error ensuring/creating Milvus collection '%s': %s",
-                self.collection_name,
-                e,
+            self._vector_store = Milvus(
+                embedding_function=self.embedder.embeddings,
+                builtin_function=BM25BuiltInFunction(
+                    input_field_names="text",
+                    output_field_names="sparse",
+                ),
+                vector_field=["dense", "sparse"],
+                text_field="text",
+                collection_name=self.collection_name,
+                connection_args=self._connection_args,
+                auto_id=True,
+                enable_dynamic_field=True,
+                consistency_level=config.MILVUS_CONSISTENCY_LEVEL,
             )
-            raise MilvusError("Failed to ensure Milvus collection.") from e
+        except Exception as e:
+            logger.exception("Failed to initialize hybrid Milvus vectorstore: %s", e)
+            raise MilvusError(
+                "Failed to initialize hybrid Milvus vectorstore. "
+                "If the collection was created with the old single-vector schema, "
+                "drop it via POST /clear_milvus and re-ingest."
+            ) from e
+        return self._vector_store
 
     def store_in_milvus(
         self,
         text: str,
         doc_id: Optional[str] = None,
         source: Optional[str] = None,
-        chunk_size: int = 600,
-        chunk_overlap: int = 120,
+        chunk_size: Optional[int] = None,
+        chunk_overlap: Optional[int] = None,
     ) -> None:
         """
-        Ingest a single long text into Milvus:
-        text -> chunks -> embeddings -> Milvus.
-
-        Raises:
-            EmbeddingError: on embedding failures.
-            MilvusError: on Milvus insert/flush issues.
+        Split a long text, embed each chunk, and insert into Milvus via the
+        langchain vectorstore.
         """
         self.ensure_collection()
 
@@ -127,119 +127,185 @@ class MilvusStoreHandler:
             doc_id = str(uuid.uuid4())
         if source is None:
             source = "inline_text"
+        if chunk_size is None:
+            chunk_size = config.CHUNK_SIZE
+        if chunk_overlap is None:
+            chunk_overlap = config.CHUNK_OVERLAP
 
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            separators=["\n\n", ".", "!", "?", " "],
+        )
+        chunks = splitter.split_text(text)
+        if not chunks:
+            logger.warning("No chunks produced from text; skipping insert.")
+            return
+
+        metadatas = [
+            {"doc_id": doc_id, "source": source, "chunk_order": order}
+            for order, _ in enumerate(chunks)
+        ]
+
+        BATCH = config.INSERT_BATCH_SIZE
         try:
-            vectors, chunks = self.embedder.get_document_embeddings(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-                long_text=text,
-            )
-        except EmbeddingError:
-            # Let callers know embedding failed specifically
-            raise
-        except Exception as e:
-            logger.exception("Unexpected error while embedding document: %s", e)
-            raise EmbeddingError("Unexpected error while embedding document.") from e
-
-        if len(vectors) != len(chunks):
-            raise MilvusError(
-                f"Mismatch between vectors ({len(vectors)}) and chunks ({len(chunks)})"
-            )
-
-        BATCH = 32
-        total = len(chunks)
-        try:
-            for i in range(0, total, BATCH):
-                batch_vectors = vectors[i : i + BATCH]
-                batch_chunks = chunks[i : i + BATCH]
-
-                rows: List[Dict[str, Any]] = []
-                for order, (vec, chunk_text) in enumerate(
-                    zip(batch_vectors, batch_chunks), start=i
-                ):
-                    rows.append(
-                        {
-                            "id": str(uuid.uuid4()),
-                            "embedding": vec,
-                            "doc_id": doc_id,
-                            "source": source,
-                            "chunk_order": order,
-                            "text": chunk_text,
-                        }
-                    )
-
-                self.client.insert(
-                    collection_name=self.collection_name,
-                    data=rows,
+            for i in range(0, len(chunks), BATCH):
+                batch_texts = chunks[i : i + BATCH]
+                batch_meta = metadatas[i : i + BATCH]
+                self._get_vector_store().add_texts(
+                    texts=batch_texts,
+                    metadatas=batch_meta,
                 )
                 logger.info(
                     "Indexed %d / %d chunks into Milvus collection '%s'",
-                    min(i + len(batch_chunks), total),
-                    total,
+                    min(i + len(batch_texts), len(chunks)),
+                    len(chunks),
                     self.collection_name,
                 )
-
             self.client.flush(self.collection_name)
             logger.info("Finished indexing document into Milvus.")
+        except EmbeddingError:
+            raise
         except Exception as e:
             logger.exception("Milvus error during store_in_milvus: %s", e)
             raise MilvusError("Failed to store document in Milvus.") from e
 
     def search_similar_chunks(
         self,
-        query_vec: List[float],
+        query: str,
         top_k: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Search similar chunks in Milvus using a precomputed query_vec.
+        Hybrid search (dense + BM25) using the query *text*. The langchain-milvus
+        store handles dense embedding internally via the configured
+        embedding_function, and Milvus computes BM25 on the indexed `text` field
+        via the BM25BuiltInFunction. Results are fused with reciprocal rank
+        fusion (RRF).
 
-        Raises:
-            MilvusError: if search fails.
+        Returns a list of dicts with {id, score, doc_id, source, chunk_order, text}.
         """
         if top_k is None:
             top_k = self.top_k
 
         try:
-            self.client.load_collection(collection_name=self.collection_name)
+            docs_and_scores = self._get_vector_store().similarity_search_with_score(
+                query=query,
+                k=top_k,
+                ranker_type="rrf",
+                ranker_params={"k": 60},
+            )
+        except Exception as e:
+            logger.exception("Hybrid search error in search_similar_chunks: %s", e)
+            raise MilvusError("Failed to run hybrid search in Milvus.") from e
 
+        results: List[Dict[str, Any]] = []
+        for doc, score in docs_and_scores:
+            meta = doc.metadata or {}
+            results.append(
+                {
+                    "id": meta.get("pk") or meta.get("id"),
+                    "score": score,
+                    "doc_id": meta.get("doc_id"),
+                    "source": meta.get("source"),
+                    "chunk_order": meta.get("chunk_order"),
+                    "text": doc.page_content,
+                }
+            )
+        return results
+
+    def _hits_to_dicts(self, hits) -> List[Dict[str, Any]]:
+        """Normalize raw pymilvus hits into the same dict shape as search_similar_chunks."""
+        results: List[Dict[str, Any]] = []
+        for h in hits:
+            entity = h.get("entity") or {}
+            results.append(
+                {
+                    "id": entity.get("pk") or h.get("id"),
+                    "score": h.get("distance"),
+                    "doc_id": entity.get("doc_id"),
+                    "source": entity.get("source"),
+                    "chunk_order": entity.get("chunk_order"),
+                    "text": entity.get("text"),
+                }
+            )
+        return results
+
+    def _get_dense_metric_type(self) -> str:
+        """
+        Discover the metric type of the `dense` field's index. langchain-milvus
+        creates the index with whatever its default is (typically L2), so we
+        query it rather than hardcoding to avoid metric-mismatch search errors.
+        Falls back to L2 (langchain-milvus default) on any lookup failure.
+        """
+        try:
+            idx_names = self.client.list_indexes(collection_name=self.collection_name)
+            for idx_name in idx_names:
+                info = self.client.describe_index(
+                    collection_name=self.collection_name, index_name=idx_name
+                )
+                if info.get("field_name") == "dense":
+                    return info.get("metric_type", "L2")
+        except Exception as e:
+            logger.warning("Could not introspect dense index metric: %s", e)
+        return "L2"
+
+    def search_dense_only(
+        self, query: str, top_k: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Pure dense vector search (no BM25). Used for hybrid-retrieval diagnostics —
+        embeds the query, ANN-searches the `dense` field, returns top_k.
+
+        The metric type is read from the index itself; for NVIDIA's L2-normalized
+        embeddings, L2 and COSINE rank identically, only the score scale differs.
+        """
+        if top_k is None:
+            top_k = self.top_k
+        try:
+            query_vec = self.embedder.get_embedding(text=query, input_type="query")
+            metric = self._get_dense_metric_type()
             res = self.client.search(
                 collection_name=self.collection_name,
                 data=[query_vec],
-                anns_field="embedding",
+                anns_field="dense",
                 limit=top_k,
-                output_fields=["doc_id", "source", "chunk_order", "text"],
+                output_fields=["pk", "text", "doc_id", "source", "chunk_order"],
                 search_params={
-                    "metric_type": "COSINE",
-                    "params": {"nprobe": 16},
+                    "metric_type": metric,
+                    "params": {"nprobe": config.MILVUS_NPROBE},
                 },
             )
-            hits = res[0]  # single query
+            return self._hits_to_dicts(res[0])
         except Exception as e:
-            logger.exception("Milvus search error in search_similar_chunks: %s", e)
-            raise MilvusError("Failed to search similar chunks in Milvus.") from e
+            logger.exception("Dense-only search failed: %s", e)
+            raise MilvusError("Dense-only search failed.") from e
 
-        results: List[Dict[str, Any]] = []
-        for h in hits:
-            row = {
-                "id": h["id"],
-                "score": h["distance"],
-                "doc_id": h.get("doc_id"),
-                "source": h.get("source"),
-                "chunk_order": h.get("chunk_order"),
-                "text": h.get("text"),
-            }
-            results.append(row)
-        return results
+    def search_sparse_only(
+        self, query: str, top_k: Optional[int] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Pure BM25 search (no dense vectors). Milvus 2.5+ tokenizes the query
+        text via the BM25 function registered on the collection and ranks
+        chunks by BM25 score. Used for hybrid-retrieval diagnostics.
+        """
+        if top_k is None:
+            top_k = self.top_k
+        try:
+            res = self.client.search(
+                collection_name=self.collection_name,
+                data=[query],
+                anns_field="sparse",
+                limit=top_k,
+                output_fields=["pk", "text", "doc_id", "source", "chunk_order"],
+                search_params={"metric_type": "BM25"},
+            )
+            return self._hits_to_dicts(res[0])
+        except Exception as e:
+            logger.exception("Sparse-only (BM25) search failed: %s", e)
+            raise MilvusError("Sparse-only (BM25) search failed.") from e
 
     def delete_collection(self) -> None:
-        """
-        Drop the configured collection after releasing it from memory.
-
-        Raises:
-            MilvusError: if drop fails.
-        """
         collection_name = self.collection_name
-
         try:
             state = self.client.get_load_state(collection_name=collection_name)
             if state.get("state") == "Loaded":
@@ -253,18 +319,13 @@ class MilvusStoreHandler:
             self.client.drop_collection(collection_name=collection_name)
             logger.info("Collection '%s' dropped successfully.", collection_name)
         except Exception as e:
-            logger.exception("Error while dropping Milvus collection '%s': %s", collection_name, e)
+            logger.exception(
+                "Error while dropping Milvus collection '%s': %s", collection_name, e
+            )
             raise MilvusError("Failed to drop Milvus collection.") from e
 
     def view_collection(self, collection_name: Optional[str]) -> None:
-        """
-        Print a small sample of rows from the given (or default) collection.
-
-        Raises:
-            MilvusError: on errors querying Milvus.
-        """
         collection_name = collection_name or self.collection_name
-
         try:
             collection_list = self.client.list_collections()
             print(f"List of collections: {collection_list}")
@@ -273,14 +334,13 @@ class MilvusStoreHandler:
                 self.client.load_collection(collection_name=collection_name)
                 rows = self.client.query(
                     collection_name=collection_name,
-                    filter="",  # no filter -> everything
-                    output_fields=["id", "doc_id", "source", "chunk_order", "text"],
+                    filter="",
+                    output_fields=["pk", "doc_id", "source", "chunk_order", "text"],
                     limit=100,
                 )
-
                 for r in rows:
                     print("-" * 80)
-                    print("id:        ", r.get("id"))
+                    print("pk:        ", r.get("pk"))
                     print("doc_id:    ", r.get("doc_id"))
                     print("source:    ", r.get("source"))
                     print("order:     ", r.get("chunk_order"))
@@ -299,8 +359,10 @@ class CacheStoreHandler:
     """
     Semantic QA cache in Milvus.
 
-    - Each entry is a (question embedding, answer, metadata) row.
-    - We search this collection first before doing full RAG.
+    Schema is custom (question_text, answer_text, model_name, prompt_version,
+    hit_count, ...) so this stays as a direct `MilvusClient` consumer rather
+    than being wrapped by `langchain-milvus`. Only the embedding call goes
+    through the new langchain-backed `EmbeddingHandler`.
     """
 
     def __init__(
@@ -310,12 +372,6 @@ class CacheStoreHandler:
         collection_name: Optional[str] = None,
         embedder: Optional[EmbeddingHandler] = None,
     ) -> None:
-        """
-        Wrapper around MilvusClient + embedding for QA cache.
-
-        Raises:
-            MilvusError: if cache collection fails to initialize.
-        """
         self.uri = uri or config.MILVUS_URI
         self.token = token or getattr(config, "MILVUS_TOKEN", None)
         self.collection_name = collection_name or config.CACHE_COLLECTION_NAME
@@ -323,7 +379,11 @@ class CacheStoreHandler:
         self.top_k = getattr(config, "TOP_K", 5)
 
         try:
-            self.client = self._get_milvus_client()
+            self.client = (
+                MilvusClient(uri=self.uri, token=self.token)
+                if self.token
+                else MilvusClient(uri=self.uri)
+            )
         except Exception as e:
             logger.exception("Failed to initialize Milvus cache client: %s", e)
             raise MilvusError("Failed to initialize Milvus cache client.") from e
@@ -341,13 +401,7 @@ class CacheStoreHandler:
             )
             raise MilvusError("Failed to initialize cache collection.") from e
 
-    def _get_milvus_client(self) -> MilvusClient:
-        if self.token:
-            return MilvusClient(uri=self.uri, token=self.token)
-        return MilvusClient(uri=self.uri)
-
     def ensure_collection(self) -> None:
-        """Create the cache collection and index if it doesn't exist, then load it."""
         try:
             if not self.client.has_collection(self.collection_name):
                 schema = MilvusClient.create_schema(
@@ -369,7 +423,7 @@ class CacheStoreHandler:
                 self.client.create_collection(
                     collection_name=self.collection_name,
                     schema=schema,
-                    consistency_level="Strong",
+                    consistency_level=config.MILVUS_CONSISTENCY_LEVEL,
                 )
 
                 index_params = self.client.prepare_index_params()
@@ -378,7 +432,6 @@ class CacheStoreHandler:
                     index_type="AUTOINDEX",
                     metric_type="COSINE",
                 )
-
                 self.client.create_index(
                     collection_name=self.collection_name,
                     index_params=index_params,
@@ -402,12 +455,6 @@ class CacheStoreHandler:
         max_tokens: Optional[int] = None,
         extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """
-        Store a QA cache entry: (question embedding + answer + metadata).
-
-        Raises:
-            CacheError: if insert fails.
-        """
         self.ensure_collection()
         entry_id = str(uuid.uuid4())
 
@@ -450,18 +497,11 @@ class CacheStoreHandler:
         top_k: Optional[int] = None,
         min_similarity: float = 0.9,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Semantic QA cache lookup.
-
-        Raises:
-            CacheError: if search fails.
-        """
         if top_k is None:
             top_k = self.top_k
 
         try:
             self.client.load_collection(collection_name=self.collection_name)
-
             res = self.client.search(
                 collection_name=self.collection_name,
                 data=[q_vec],
@@ -482,7 +522,7 @@ class CacheStoreHandler:
                 ],
                 search_params={
                     "metric_type": "COSINE",
-                    "params": {"nprobe": 16},
+                    "params": {"nprobe": config.MILVUS_NPROBE},
                 },
             )
             hits = res[0]
@@ -494,7 +534,6 @@ class CacheStoreHandler:
         for h in hits:
             distance = h["distance"]
             similarity = 1.0 - float(distance)
-
             meta = {
                 "id": h["id"],
                 "distance": distance,
@@ -518,7 +557,6 @@ class CacheStoreHandler:
                 meta["prompt_version"],
                 meta["question_text"],
             )
-
             if (
                 similarity >= min_similarity
                 and meta["model_name"] == model_name
@@ -529,11 +567,9 @@ class CacheStoreHandler:
 
         if best is None:
             logger.info("[CACHE MISS] no suitable entry for query='%s'", query)
-
         return best
 
     def delete_collection(self) -> None:
-        """Drop the cache collection (for resets / migrations)."""
         collection_name = self.collection_name
         try:
             state = self.client.get_load_state(collection_name=collection_name)

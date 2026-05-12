@@ -1,8 +1,7 @@
 import time
-import json
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
-from pydantic import ValidationError
+from langchain_core.runnables import RunnableLambda
 
 from src.utils import config
 from src.utils.errors import InferenceError
@@ -15,21 +14,19 @@ from src.utils.services.chunk_ranking import NVidiaReranker
 def build_context(chunks: List[Dict[str, Any]]) -> str:
     parts: List[str] = []
     for i, c in enumerate(chunks, start=1):
+        score = c.get("score")
+        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
         parts.append(
-            f"[Chunk {i} | score={c['score']:.4f} | source={c['source']}]\n{c['text']}\n"
+            f"[Chunk {i} | score={score_str} | source={c.get('source')}]\n{c['text']}\n"
         )
     return "\n\n".join(parts)
 
 
-def format_history_for_prompt(history: List[Dict], max_turns: int = 6) -> str:
-    """
-    Turn last `max_turns` messages into a readable dialogue block.
-    """
+def format_history_for_prompt(history: List[Dict], max_turns: int = config.HISTORY_MAX_TURNS) -> str:
     if not history:
         return "None"
 
     trimmed = history[-max_turns:]
-
     lines = []
     for msg in trimmed:
         role = msg.get("role", "")
@@ -42,10 +39,79 @@ def format_history_for_prompt(history: List[Dict], max_turns: int = 6) -> str:
             prefix = "System"
         else:
             prefix = role or "Unknown"
-
         lines.append(f"{prefix}: {content}")
-
     return "\n".join(lines)
+
+
+def _retrieve_for_query(
+    milvus_store: MilvusStoreHandler,
+    query: str,
+    top_k: int,
+) -> List[Dict[str, Any]]:
+    """Hybrid (dense + BM25) retrieval for a single query string."""
+    return milvus_store.search_similar_chunks(query=query, top_k=top_k)
+
+
+def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
+    """
+    LCEL sub-chain that runs *after* retrieval:
+      input: {question, retrieved, history, _timings, _debug?}
+      rerank -> slice top_k -> assemble (context + history_text) -> chat completion
+    """
+
+    def rerank(payload: Dict[str, Any]) -> Dict[str, Any]:
+        retrieved = payload["retrieved"]
+        reranked = reranker.execute(question=payload["question"], retrieved_chunks=retrieved)
+        # Slice down to TOP_K for the LLM context.
+        sliced = reranked[: config.TOP_K]
+        debug = payload.get("_debug")
+        if debug is not None:
+            debug["reranked_chunks"] = reranked
+            debug["reranked_top_k"] = sliced
+        return {**payload, "reranked": sliced}
+
+    def assemble(payload: Dict[str, Any]) -> Dict[str, Any]:
+        context = build_context(payload["reranked"])
+        history_text = payload.get("history_text") or format_history_for_prompt(
+            payload["history"], max_turns=config.HISTORY_MAX_TURNS
+        )
+        debug = payload.get("_debug")
+        if debug is not None:
+            debug["history_text"] = history_text
+        return {**payload, "context": context, "history_text": history_text}
+
+    def generate(payload: Dict[str, Any]) -> str:
+        timings = payload["_timings"]
+        debug = payload.get("_debug")
+        if debug is not None:
+            try:
+                rendered = llm._prompt.format_messages(
+                    history_text=payload["history_text"],
+                    question=payload["question"],
+                    context=payload["context"],
+                )
+                debug["rendered_prompt"] = [
+                    {"role": getattr(m, "type", "unknown"), "content": m.content}
+                    for m in rendered
+                ]
+            except Exception as e:
+                logger.warning("Failed to capture rendered prompt for debug: %s", e)
+                debug["rendered_prompt"] = []
+
+        timings["t_llm_start"] = time.perf_counter()
+        answer = llm.chat_completion(
+            history_text=payload["history_text"],
+            question=payload["question"],
+            context=payload["context"],
+        )
+        timings["t_llm_end"] = time.perf_counter()
+        return answer
+
+    return (
+        RunnableLambda(rerank)
+        | RunnableLambda(assemble)
+        | RunnableLambda(generate)
+    )
 
 
 def answer_question(
@@ -53,80 +119,118 @@ def answer_question(
     query_vec: List[float],
     collection_name: str,
     history: List[Dict],
-):
+    debug: bool = False,
+) -> Dict[str, Any]:
     """
-    Main RAG orchestration for answering a question.
+    Main RAG orchestration.
+
+    Pipeline:
+      1. Hybrid (dense + BM25) retrieval for the original question, RETRIEVE_K chunks.
+      2. Rerank chunks against the question.
+      3. Slice to TOP_K and assemble prompt.
+      4. Call the LLM.
+
+    Returns a dict with answer, stage timings, and (when debug=True) intermediate
+    artifacts.
 
     Raises:
-        InferenceError: for any Milvus/LLM issues that should surface to app layer.
+        InferenceError: for retrieval/rerank/LLM failures.
     """
     milvus_store = MilvusStoreHandler(collection_name=collection_name)
-    cache_store = get_cache_store()
     nim_client = NIMClient()
     nim_reranker = NVidiaReranker()
 
-    logger.info("Retrieving context from Milvus DB")
+    debug_info: Optional[Dict[str, Any]] = {} if debug else None
+    history_text = format_history_for_prompt(history, max_turns=config.HISTORY_MAX_TURNS)
+
+    logger.info("Retrieving context from Milvus DB (hybrid dense + BM25)")
     try:
         t_milvus_start = time.perf_counter()
-        retrieved = milvus_store.search_similar_chunks(
-            query_vec=query_vec, top_k=config.TOP_K
+        retrieved = _retrieve_for_query(
+            milvus_store, question, top_k=config.RETRIEVE_K
         )
         t_milvus_end = time.perf_counter()
     except Exception as e:
         logger.exception("Failed to retrieve context from Milvus: %s", e)
         raise InferenceError("Failed to retrieve context from Milvus.") from e
 
+    if debug_info is not None:
+        debug_info["retrieved_chunks"] = retrieved
+        # Hybrid-retrieval diagnostic: re-run dense-only and BM25-only searches
+        # so the UI can show what each component contributes vs. the fused list.
+        try:
+            debug_info["dense_only_chunks"] = milvus_store.search_dense_only(
+                query=question, top_k=config.RETRIEVE_K
+            )
+        except Exception as e:
+            logger.warning("Dense-only diagnostic search failed (non-fatal): %s", e)
+            debug_info["dense_only_chunks"] = []
+        try:
+            debug_info["sparse_only_chunks"] = milvus_store.search_sparse_only(
+                query=question, top_k=config.RETRIEVE_K
+            )
+        except Exception as e:
+            logger.warning("Sparse-only diagnostic search failed (non-fatal): %s", e)
+            debug_info["sparse_only_chunks"] = []
+
     if not retrieved:
         logger.info("No relevant context found in the vector store.")
-        return (
-            "No relevant context found in the vector store.",
-            t_milvus_start,
-            t_milvus_end,
-            t_milvus_start,
-            t_milvus_end,
-        )
-    
-    try:
-        reranked= nim_reranker.execute(question= question, retrieved_chunks= retrieved)
-    except Exception as e:
-        logger.exception(f"Failed to rerank the chunks: {e}")
-        raise InferenceError("Failed to rerank the chunks") from e 
+        return {
+            "answer": "I couldn't find anything in the indexed document that touches on that. "
+                      "Could you try rephrasing, or asking about a different topic from the book?",
+            "t_milvus_start": t_milvus_start,
+            "t_milvus_end": t_milvus_end,
+            "t_llm_start": t_milvus_start,
+            "t_llm_end": t_milvus_end,
+            "debug": debug_info,
+        }
 
-    logger.info("Building the context from the reranked chunks")
-    context = build_context(reranked)
-    history_text = format_history_for_prompt(history, max_turns=6)
+    chain = build_generation_chain(nim_reranker, nim_client)
+    timings: Dict[str, float] = {}
+    chain_input: Dict[str, Any] = {
+        "question": question,
+        "retrieved": retrieved,
+        "history": history,
+        "history_text": history_text,
+        "_timings": timings,
+    }
+    if debug_info is not None:
+        chain_input["_debug"] = debug_info
 
     try:
-        t_llm_start = time.perf_counter()
-        answer = nim_client.chat_completion(
-            history_text=history_text, question=question, context=context
-        )
-        t_llm_end = time.perf_counter()
+        logger.info("Invoking generation chain (rerank -> prompt -> LLM)")
+        answer = chain.invoke(chain_input)
     except InferenceError:
-        # Already wrapped correctly
         raise
-    except (json.JSONDecodeError, ValidationError) as e:
-        logger.error("Invalid model output: %s", e)
-        raise InferenceError("LLM output validation failed.") from e
     except Exception as e:
-        logger.exception("Unexpected error while generating answer: %s", e)
-        raise InferenceError("Unexpected error during answer generation.") from e
+        logger.exception("Unexpected error from generation chain: %s", e)
+        raise InferenceError("Unexpected error from generation chain.") from e
 
-    context_chunk_ids = [item.get("id") for item in retrieved]
+    t_llm_start = timings.get("t_llm_start", t_milvus_end)
+    t_llm_end = timings.get("t_llm_end", t_llm_start)
 
-    # If you want to re-enable cache writes, they should be wrapped similarly:
-    # try:
-    # logger.info("Storing the conversation in the rag cache")
-    # cache_store.put_entry(
-    #     question_text=question,
-    #     query_vec=query_vec,
-    #     answer_text=answer,
-    #     context_chunk_ids=context_chunk_ids,
-    #     model_name=config.LLM_MODEL,
-    #     prompt_version=config.PROMPT_VERSION,
-    # )
-    # except Exception as e:
-    #     logger.exception("Failed to write to cache: %s", e)
-    #     # non-fatal; don't raise
+    if config.TOGGLE_CACHE and not debug:
+        try:
+            context_chunk_ids = [item.get("id") for item in retrieved if item.get("id")]
+            get_cache_store().put_entry(
+                question_text=question,
+                query_vec=query_vec,
+                answer_text=answer,
+                context_chunk_ids=context_chunk_ids,
+                model_name=config.LLM_MODEL,
+                prompt_version=config.PROMPT_VERSION,
+                temperature=config.TEMPERATURE,
+                max_tokens=config.MAX_TOKENS,
+            )
+            logger.info("Stored Q/A pair in semantic cache.")
+        except Exception as e:
+            logger.exception("Cache write failed (non-fatal): %s", e)
 
-    return answer, t_milvus_start, t_milvus_end, t_llm_start, t_llm_end
+    return {
+        "answer": answer,
+        "t_milvus_start": t_milvus_start,
+        "t_milvus_end": t_milvus_end,
+        "t_llm_start": t_llm_start,
+        "t_llm_end": t_llm_end,
+        "debug": debug_info,
+    }

@@ -1,4 +1,9 @@
-langchain_text_splitters==0.3.7
+langchain==0.3.27
+langchain-core==0.3.78
+langchain-community==0.3.30
+langchain-nvidia-ai-endpoints==0.3.19
+langchain-milvus==0.2.1
+langchain_text_splitters==0.3.11
 uvicorn==0.35.0
 chromadb==1.0.20
 fastapi==0.116.1
@@ -8,4 +13,6 @@ pymupdf==1.26.6
 sqlalchemy==2.0.44
 psycopg2-binary==2.9.11
 redis==7.1.0
-locust==2.42.6
+locust>=2.43.0
+streamlit>=1.39.0
+requests>=2.32.5

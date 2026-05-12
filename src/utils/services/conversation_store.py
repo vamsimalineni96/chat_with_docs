@@ -188,6 +188,36 @@ class ConversationService:
             raise ConversationServiceError("Failed to add message.") from e
 
     @staticmethod
+    def list_conversations(
+        db: Session,
+        user: models.User,
+        limit: int = 100,
+    ) -> List[models.Conversation]:
+        """
+        List a user's conversations, most-recently-updated first.
+
+        Raises:
+            ConversationServiceError: on DB failure.
+        """
+        try:
+            convs = (
+                db.query(models.Conversation)
+                .filter(models.Conversation.user_id == user.id)
+                .order_by(desc(models.Conversation.updated_at))
+                .limit(limit)
+                .all()
+            )
+            logger.info(
+                "Listed %s conversations for user_id=%s", len(convs), user.id
+            )
+            return convs
+        except SQLAlchemyError as e:
+            logger.exception(
+                "Database error in list_conversations(user_id=%s)", user.id
+            )
+            raise ConversationServiceError("Failed to list conversations.") from e
+
+    @staticmethod
     def get_recent_messages(
         db: Session,
         conversation: models.Conversation,

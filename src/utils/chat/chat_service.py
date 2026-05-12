@@ -24,7 +24,7 @@ def cache_output(payload, q_embed):
             q_vec=q_embed,
             model_name=config.LLM_MODEL,
             prompt_version=config.PROMPT_VERSION,
-            min_similarity=0.9,
+            min_similarity=config.CACHE_MIN_SIMILARITY,
         )
     except CacheError:
         # Already wrapped at Milvus layer
@@ -64,7 +64,7 @@ def rag_output(
     try:
         t_db_start = time.perf_counter()
         recent_msgs = converstion_service.get_recent_messages(
-            db, conversation, limit=20, user=user
+            db, conversation, limit=config.HISTORY_LIMIT, user=user
         )
         history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
     except ConversationServiceError:
@@ -91,17 +91,12 @@ def rag_output(
 
     logger.info("Running RAG pipeline to generate answer")
     try:
-        (
-            answer,
-            t_milvus_start,
-            t_milvus_end,
-            t_llm_start,
-            t_llm_end,
-        ) = answer_question(
+        result = answer_question(
             question=payload.question,
             query_vec=query_vec,
             collection_name=payload.collection_name,
             history=history_for_llm,
+            debug=getattr(payload, "debug", False),
         )
     except InferenceError:
         # Already wrapped appropriately
@@ -109,6 +104,13 @@ def rag_output(
     except Exception as e:
         logger.exception("Unexpected error from RAG pipeline: %s", e)
         raise InferenceError("Unexpected error from RAG pipeline.") from e
+
+    answer = result["answer"]
+    t_milvus_start = result["t_milvus_start"]
+    t_milvus_end = result["t_milvus_end"]
+    t_llm_start = result["t_llm_start"]
+    t_llm_end = result["t_llm_end"]
+    debug_info = result.get("debug")
 
     logger.info("Storing the chatbot's reply to the user query")
     try:
@@ -133,11 +135,21 @@ def rag_output(
         "RAG_PIPELINE_METRICS | conv_id=%s | domain=%s | "
         "db_load_ms=%.2f | milvus_ms=%.2f | llm_ms=%.2f | db_save_ms=%.2f | total_ms=%.2f",
         conversation.id,
-        "harry_potter",
+        config.METRICS_DOMAIN,
         (t_db_end - t_db_start) * 1000,
         (t_milvus_end - t_milvus_start) * 1000,
         (t_llm_end - t_llm_start) * 1000,
         (t_save_end - t_save_start) * 1000,
         (t1 - t0) * 1000,
     )
-    return answer
+
+    if debug_info is not None:
+        debug_info["timings_ms"] = {
+            "db_load": (t_db_end - t_db_start) * 1000,
+            "milvus": (t_milvus_end - t_milvus_start) * 1000,
+            "llm": (t_llm_end - t_llm_start) * 1000,
+            "db_save": (t_save_end - t_save_start) * 1000,
+            "total": (t1 - t0) * 1000,
+        }
+
+    return {"answer": answer, "debug": debug_info}

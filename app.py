@@ -45,7 +45,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-executor = ThreadPoolExecutor(max_workers=4)
+executor = ThreadPoolExecutor(max_workers=config.THREAD_POOL_MAX_WORKERS)
 
 @app.get("/health")
 async def health():
@@ -88,7 +88,7 @@ async def chat(
                 conversation = conversation_service.create_conversation(
                     db,
                     user=user,
-                    title="Harry Potter chat",
+                    title=config.DEFAULT_CONVERSATION_TITLE,
                 )
         else:
             logger.info(
@@ -98,7 +98,7 @@ async def chat(
             conversation = conversation_service.create_conversation(
                 db,
                 user=user,
-                title="Harry Potter chat",
+                title=config.DEFAULT_CONVERSATION_TITLE,
             )
 
         conv_id = str(conversation.id)
@@ -136,7 +136,7 @@ async def chat(
                 },
             )
 
-        if config.TOGGLE_CACHE:
+        if config.TOGGLE_CACHE and not payload.debug:
             logger.info("Searching the cache store for similar answer")
             try:
                 cached_answer = cache_output(payload, q_embed)
@@ -147,18 +147,21 @@ async def chat(
 
             if cached_answer:
                 return ChatResponse(conversation_id=conv_id, answer=cached_answer)
-            else:
-                logger.info("Cache miss, routing to RAG for answering")
-                rag_answer = rag_output(
-                    payload, db, conversation, user, query_vec=q_embed
-                )
-                return ChatResponse(conversation_id=conv_id, answer=rag_answer)
+            logger.info("Cache miss, routing to RAG for answering")
+
+        if payload.debug:
+            logger.info("Debug request — bypassing cache and forcing full RAG")
         else:
             logger.info("Using RAG to answer the question")
-            rag_answer = rag_output(
-                payload, db, conversation, user, query_vec=q_embed
-            )
-            return ChatResponse(conversation_id=conv_id, answer=rag_answer)
+
+        rag_result = rag_output(
+            payload, db, conversation, user, query_vec=q_embed
+        )
+        return ChatResponse(
+            conversation_id=conv_id,
+            answer=rag_result["answer"],
+            debug=rag_result.get("debug"),
+        )
 
     except ConversationOwnershipError as e:
         logger.error(
@@ -240,6 +243,66 @@ async def chat(
                     conv_id,
                     e,
                 )
+
+
+@app.get("/list_conversations")
+def list_conversations(user_external_id: str, db: Session = Depends(get_db)):
+    """List all conversations for a given user (most-recently-updated first)."""
+    try:
+        user = conversation_service.get_or_create_user(db, external_id=user_external_id)
+        convs = conversation_service.list_conversations(db, user=user)
+        return {
+            "user_external_id": user_external_id,
+            "conversations": [
+                {
+                    "conversation_id": str(c.id),
+                    "title": c.title,
+                    "created_at": c.created_at.isoformat() if c.created_at else None,
+                    "updated_at": c.updated_at.isoformat() if c.updated_at else None,
+                }
+                for c in convs
+            ],
+        }
+    except ConversationServiceError as e:
+        logger.exception("Error listing conversations for user=%s: %s", user_external_id, e)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/list_messages")
+def list_messages(
+    user_external_id: str,
+    conversation_id: UUID,
+    limit: int = 200,
+    db: Session = Depends(get_db),
+):
+    """List messages in a conversation (chronological), gated by user ownership."""
+    try:
+        user = conversation_service.get_or_create_user(db, external_id=user_external_id)
+        conv = conversation_service.get_conversation_by_id(
+            db, conversation_id=conversation_id, user=user
+        )
+        if conv is None:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        msgs = conversation_service.get_recent_messages(
+            db, conversation=conv, user=user, limit=limit
+        )
+        return {
+            "conversation_id": str(conv.id),
+            "messages": [
+                {
+                    "role": m.role,
+                    "content": m.content,
+                    "sequence_no": m.sequence_no,
+                    "created_at": m.created_at.isoformat() if m.created_at else None,
+                }
+                for m in msgs
+            ],
+        }
+    except ConversationOwnershipError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except ConversationServiceError as e:
+        logger.exception("Error listing messages: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/upload_pdf_async")
