@@ -5,6 +5,7 @@ from langchain_nvidia_ai_endpoints import NVIDIARerank
 
 from src.utils.config import RERANK_MODEL, NVIDIA_API_KEY
 from src.utils.errors import RerankError
+from src.utils.observability import observe, update_current_generation
 from src.utils.services.logger_config import logger
 
 
@@ -24,6 +25,7 @@ class NVidiaReranker:
             api_key=NVIDIA_API_KEY,
         )
 
+    @observe(name="rerank", as_type="generation")
     def execute(
         self, question: str, retrieved_chunks: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
@@ -67,4 +69,15 @@ class NVidiaReranker:
                     "rerank_score": meta.get("relevance_score"),
                 }
             )
+
+        update_current_generation(
+            model=self.model,
+            input={"question": question, "input_count": len(retrieved_chunks)},
+            output={
+                "output_count": len(reranked_chunks),
+                "top_rerank_scores": [c.get("rerank_score") for c in reranked_chunks[:5]],
+            },
+            usage_details={"input": len(retrieved_chunks), "total": len(retrieved_chunks)},
+            metadata={"unit": "passages_reranked"},
+        )
         return reranked_chunks

@@ -1,109 +1,225 @@
-from locust import HttpUser, task, between
+"""
+Multi-user, multi-conversation Locust workload for the HP4-indexed RAG chat.
+
+Rate-tuned for NVIDIA NIM's 40 RPM cap on the LLM + embedding models:
+  N users * (60 / wait_seconds) ≈ 40 RPM
+
+Defaults (--users 8, wait 10-15s) → ~38-48 RPM. Keep --users ≤ 8 to avoid 429s.
+
+Run:
+  locust -f mt_rag_locust.py --host http://localhost:8000 \
+         --users 8 --spawn-rate 1 -t 10m --headless
+
+  # Or with the UI:
+  locust -f mt_rag_locust.py --host http://localhost:8000
+
+Each locust user:
+  - Picks a sticky `user_external_id` from a pool of N personas.
+  - Maintains a list of conversation_ids and rotates between them (turning each
+    into a multi-turn session). 10% of turns start a fresh conversation.
+  - 10% of turns are sent with debug=true (those traces will show
+    retrieved/reranked/prompt in the Langfuse UI debug section).
+"""
+
+import os
 import random
 
-GOBLET_OF_FIRE_QUERIES = [
-    "Describe all three tasks of the Triwizard Tournament and what Harry has to do in each.",
-    "How does Harry end up being selected as the fourth Triwizard champion despite being underage?",
-    "List the dragons used in the first Triwizard task and explain which one Harry faces.",
-    "How does Harry prepare for facing the dragon in the first task, and who helps him?",
-    "Explain the clues and events that lead Harry to understand how to breathe underwater for the second task.",
-    "Who are the hostages in the second Triwizard task and why is each one chosen?",
-    "Describe the obstacles Harry encounters inside the maze during the third task.",
-    "How does the Triwizard Cup turn out to be a Portkey and who arranged it?",
-    "Summarize what happens in the graveyard when Voldemort returns to full strength.",
-    "Explain the duel between Harry and Voldemort in the graveyard and the significance of the golden connection between their wands.",
-    "How does Barty Crouch Jr. impersonate Moody and what clues are dropped throughout the book?",
-    "Describe the role of Rita Skeeter in the story and how she gathers her information.",
-    "How is house-elf rights and Hermione’s S.P.E.W. campaign portrayed in this book?",
-    "What tensions arise between Harry and Ron after Harry’s name comes out of the Goblet of Fire?",
-    "Describe the Yule Ball: how the partners are chosen, who goes with whom, and why the evening is important for character relationships.",
-    "How does Dumbledore react to Harry’s recounting of the events in the graveyard and Voldemort’s return?",
-    "Explain the significance of the Pensieve scene with Barty Crouch Jr.’s trial.",
-    "What role does Ludo Bagman play in the book and why is he a suspicious character?",
-    "How does the Quidditch World Cup set the tone for the return of Voldemort and his supporters?",
-    "Describe the events surrounding the Dark Mark appearing at the Quidditch World Cup.",
+from locust import HttpUser, task, between
+
+
+# ---------------------------------------------------------------------------
+# Tunables (override via env if you like)
+# ---------------------------------------------------------------------------
+USER_POOL_SIZE = int(os.getenv("LOCUST_USER_POOL_SIZE", "20"))
+MAX_CONVERSATIONS_PER_USER = int(os.getenv("LOCUST_MAX_CONVOS_PER_USER", "3"))
+NEW_CONVERSATION_PROB = float(os.getenv("LOCUST_NEW_CONV_PROB", "0.10"))
+DEBUG_PROB = float(os.getenv("LOCUST_DEBUG_PROB", "0.10"))
+COLLECTION_NAME = os.getenv("MILVUS_COLLECTION_NAME", "docs")
+
+# Personas the locust user pool will draw from. Multiple locust workers can
+# end up sharing a persona — that's the multi-session-per-user behavior.
+USER_NAMES = [
+    "alice", "bob", "carol", "dave", "eve", "frank", "grace", "harry",
+    "ivy", "jack", "kate", "leo", "maya", "noah", "olivia", "peter",
+    "quinn", "rachel", "sam", "tina",
+][:USER_POOL_SIZE]
+
+
+# ---------------------------------------------------------------------------
+# HP4-only question pool, calibrated to stress different retrieval modes.
+# ---------------------------------------------------------------------------
+
+# Single-chunk factual (BM25 strong)
+FACTUAL = [
+    "Who are the three Triwizard champions originally selected by the Goblet?",
+    "What is the password to the prefects' bathroom?",
+    "What does the Hungarian Horntail look like?",
+    "What spell does Harry use against his dragon in the first task?",
+    "What is in the egg Harry receives after the first task?",
+    "Who actually puts Harry's name in the Goblet of Fire?",
 ]
 
-DEATHLY_HALLOWS_QUERIES = [
-    "Summarize the contents of Dumbledore’s will and what he leaves to Harry, Ron, and Hermione.",
-    "Explain the significance of the seven Potters plan and what happens during the escape from Privet Drive.",
-    "Describe the events at Bill and Fleur’s wedding and how the Death Eaters’ takeover interrupts it.",
-    "How do Harry, Ron, and Hermione infiltrate the Ministry of Magic and what are they trying to retrieve?",
-    "Explain how the trio discovers that the locket Horcrux is with Umbridge and how they steal it.",
-    "Describe the effect of the locket Horcrux on Harry, Ron, and Hermione over time.",
-    "Why does Ron leave the tent, and what brings him back to the group later?",
-    "Explain how the Sword of Gryffindor appears to Harry in the frozen lake and how it destroys the locket.",
-    "Summarize the story of the Three Brothers and how it explains the Deathly Hallows.",
-    "Detail what each of the Deathly Hallows is and how they are connected to Harry and Voldemort.",
-    "Describe how the trio breaks into Gringotts, including the role of Griphook and the protections in Bellatrix’s vault.",
-    "Explain the events leading up to the Battle of Hogwarts and how Hogwarts prepares for the fight.",
-    "List the Horcruxes destroyed in Deathly Hallows and who destroys each one.",
-    "Describe Snape’s memories in the Pensieve and how they change Harry’s understanding of Snape.",
-    "Explain Harry’s walk into the forest and his meeting with Voldemort there.",
-    "How does Harry survive the Killing Curse in the forest, and what is revealed in the King’s Cross scene?",
-    "Describe the final confrontation between Harry and Voldemort in the Great Hall and why the Elder Wand turns against Voldemort.",
-    "Summarize what happens to the main characters after the Battle of Hogwarts as shown in the epilogue.",
-    "Explain how the relationship between Harry and Dumbledore is reinterpreted through Rita Skeeter’s book and Aberforth’s comments.",
-    "Describe the role of Kreacher and the other house-elves in Deathly Hallows, especially during the Battle of Hogwarts.",
+# Proper-noun heavy (hybrid retrieval should shine)
+PROPER_NOUN = [
+    "What does Ludo Bagman do for a living?",
+    "Tell me about Bertha Jorkins.",
+    "Who is Walden Macnair?",
+    "What does Hassan Mostafa do?",
+    "Who is Mr. Roberts?",
+    "What happens to Winky in the woods?",
+    "Tell me about Madame Maxime.",
+    "What is the Sneakoscope and how is it used?",
+    "Tell me about the Foe-Glass.",
+    "What is the Pensieve?",
 ]
 
-# If you want one combined pool for Locust:
-HP_QUERIES = GOBLET_OF_FIRE_QUERIES + DEATHLY_HALLOWS_QUERIES
+# Multi-chunk synthesis (rerank + bigger TOP_K helps)
+SYNTHESIS = [
+    "Walk me through the three Triwizard tasks in order.",
+    "How does Barty Crouch Jr. impersonate Mad-Eye Moody throughout the year?",
+    "Describe the events at the Quidditch World Cup before the Death Eater attack.",
+    "How does Voldemort return to a body in the graveyard?",
+    "What is the role of the Ministry of Magic throughout the book?",
+]
+
+# Character / relationship
+CHARACTER = [
+    "What is the relationship between Hermione and Viktor Krum?",
+    "Why is Ron upset with Harry after the Goblet picks him?",
+    "How does Rita Skeeter describe Harry in her articles?",
+    "How does Mad-Eye Moody act in his first Defence Against the Dark Arts class?",
+    "How does the wizarding community react to the events at the Quidditch World Cup?",
+]
+
+# Conversational follow-ups (tests history handling — see FOLLOWUP_THREADS below)
+FOLLOWUP_THREADS = [
+    [
+        "Tell me about the Yule Ball.",
+        "Who did Harry take?",
+        "What about Ron?",
+        "How did the evening end?",
+    ],
+    [
+        "Describe the first task of the Triwizard Tournament.",
+        "What dragon did Harry get?",
+        "How did he get past it?",
+        "What did he win?",
+    ],
+    [
+        "Who is Cedric Diggory?",
+        "How does he die?",
+        "How does Harry react to it?",
+    ],
+]
+
+SINGLE_TURN_QUESTIONS = FACTUAL + PROPER_NOUN + SYNTHESIS + CHARACTER
+
 
 class PotterRAGUser(HttpUser):
-    wait_time = between(5, 10)
+    # ~12.5s mean wait → 4.8 req/min per user
+    # With 8 users that's ~38 req/min, comfortably under NVIDIA's 40 RPM cap.
+    wait_time = between(10, 15)
     network_timeout = 130
     connection_timeout = 30
 
     def on_start(self):
-        # one logical "user"
-        self.user_external_id = f"locust-user-{id(self)}"
-        # will be set after the first successful /chat call
-        self.conversation_id = None
+        # Pick a sticky persona from the pool. Multiple locust workers may
+        # land on the same persona — that's intentional multi-session behavior.
+        self.user_external_id = random.choice(USER_NAMES)
+        # Tracks the conversations this locust worker has opened.
+        self.conversation_ids: list[str] = []
+        # When in the middle of a scripted multi-turn thread:
+        self.active_thread: list[str] | None = None
+        self.thread_index: int = 0
+
+    # --------------------------- helpers ----------------------------------
+
+    def _pick_or_create_conversation(self) -> str | None:
+        """
+        With prob NEW_CONVERSATION_PROB or when we have no conversations yet,
+        return None (the API will mint a new conversation_id and we'll capture
+        it from the response). Otherwise rotate through the existing ones.
+        """
+        if not self.conversation_ids:
+            return None
+        if random.random() < NEW_CONVERSATION_PROB and len(self.conversation_ids) < MAX_CONVERSATIONS_PER_USER:
+            return None
+        return random.choice(self.conversation_ids)
+
+    def _pick_question(self) -> str:
+        """
+        ~25% of the time, walk through a scripted follow-up thread to stress
+        history handling. Rest of the time, single-turn question.
+        """
+        # Continue an ongoing thread
+        if self.active_thread is not None and self.thread_index < len(self.active_thread):
+            q = self.active_thread[self.thread_index]
+            self.thread_index += 1
+            if self.thread_index >= len(self.active_thread):
+                self.active_thread = None
+                self.thread_index = 0
+            return q
+
+        # Start a new thread sometimes
+        if random.random() < 0.25:
+            self.active_thread = random.choice(FOLLOWUP_THREADS)
+            self.thread_index = 1
+            return self.active_thread[0]
+
+        return random.choice(SINGLE_TURN_QUESTIONS)
+
+    # --------------------------- main task --------------------------------
 
     @task
     def rag_turn(self):
+        conv_id = self._pick_or_create_conversation()
+        question = self._pick_question()
+        debug = random.random() < DEBUG_PROB
+
         payload = {
             "user_external_id": self.user_external_id,
-            "conversation_id": self.conversation_id,  # None on first call, reused later
-            "question": random.choice(HP_QUERIES),
-            "collection_name": "docs",
+            "question": question,
+            "collection_name": COLLECTION_NAME,
+            "debug": debug,
         }
+        if conv_id is not None:
+            payload["conversation_id"] = conv_id
+
+        # Tag the locust UI breakdown by question type for easier eyeballing.
+        name = "hp_rag_turn_debug" if debug else "hp_rag_turn"
 
         with self.client.post(
             "/chat",
             json=payload,
-            name="hp_rag_turn",
+            name=name,
             catch_response=True,
         ) as resp:
-
-            # 1️⃣ network / timeout / connection error: status == 0
             if resp.status_code == 0:
                 resp.failure(f"NETWORK ERROR: {repr(getattr(resp, 'error', None))}")
                 return
 
-            # 2️⃣ normal HTTP errors
-            if resp.status_code != 200:
-                text = resp.text or ""
-                resp.failure(f"status={resp.status_code}, body={text[:200]}")
+            if resp.status_code == 429:
+                # Hit the NIM rate limit — slow down naturally via wait_time.
+                resp.failure("429 from upstream (NVIDIA RPM cap)")
                 return
 
-            # 3️⃣ parse JSON and verify answer
+            if resp.status_code != 200:
+                text = (resp.text or "")[:200]
+                resp.failure(f"status={resp.status_code}, body={text}")
+                return
+
             try:
                 data = resp.json()
             except Exception as e:
-                text = resp.text or ""
-                resp.failure(f"json error: {repr(e)}, body={text[:200]}")
+                resp.failure(f"json error: {repr(e)}")
                 return
 
-            # 🔹 store conversation_id after first successful call
-            # adjust this depending on your actual response schema
-            if self.conversation_id is None:
-                self.conversation_id = (
-                    data.get("conversation_id")
-                    or data.get("conversation", {}).get("id")
-                )
+            new_conv_id = data.get("conversation_id")
+            if new_conv_id and new_conv_id not in self.conversation_ids:
+                if len(self.conversation_ids) >= MAX_CONVERSATIONS_PER_USER:
+                    self.conversation_ids.pop(0)
+                self.conversation_ids.append(new_conv_id)
 
-            answer = data.get("answer") or data.get("content", "")
+            answer = data.get("answer", "")
             if not answer:
                 resp.failure("empty answer")

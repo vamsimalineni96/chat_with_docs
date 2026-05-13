@@ -5,6 +5,7 @@ from langchain_core.runnables import RunnableLambda
 
 from src.utils import config
 from src.utils.errors import InferenceError
+from src.utils.observability import observe, update_current_observation
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
@@ -43,13 +44,30 @@ def format_history_for_prompt(history: List[Dict], max_turns: int = config.HISTO
     return "\n".join(lines)
 
 
+@observe(name="hybrid_retrieve", as_type="span")
 def _retrieve_for_query(
     milvus_store: MilvusStoreHandler,
     query: str,
     top_k: int,
 ) -> List[Dict[str, Any]]:
     """Hybrid (dense + BM25) retrieval for a single query string."""
-    return milvus_store.search_similar_chunks(query=query, top_k=top_k)
+    results = milvus_store.search_similar_chunks(query=query, top_k=top_k)
+    update_current_observation(
+        input={"query": query, "top_k": top_k},
+        output={
+            "count": len(results),
+            "top_chunks": [
+                {
+                    "score": r.get("score"),
+                    "source": r.get("source"),
+                    "chunk_order": r.get("chunk_order"),
+                    "text_preview": (r.get("text") or "")[:200],
+                }
+                for r in results[:5]
+            ],
+        },
+    )
+    return results
 
 
 def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
@@ -114,6 +132,7 @@ def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
     )
 
 
+@observe(name="answer_question")
 def answer_question(
     question: str,
     query_vec: List[float],

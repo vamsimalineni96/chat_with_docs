@@ -65,6 +65,12 @@ async def chat(
 ):
     """
     Multi-user, multi-turn chat endpoint with per-conversation locking.
+
+    Note: the async FastAPI route is *not* decorated with @observe because the
+    langfuse 2.x async decorator doesn't play well with FastAPI route
+    serialization. Trace metadata (user_id, session_id, tags) is attached
+    inside the first synchronous function this route calls — either
+    `cache_output` (cache-hit path) or `rag_output` (RAG path).
     """
     conv_id: str | None = None
     lock_token: str | None = None

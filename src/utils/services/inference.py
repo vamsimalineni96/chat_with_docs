@@ -9,6 +9,7 @@ from langchain_core.output_parsers import StrOutputParser
 from src.root import PROJECT_ROOT
 from src.utils.errors import InferenceError
 from src.utils import config
+from src.utils.observability import langfuse_callback
 from src.utils.services.logger_config import logger
 
 
@@ -62,13 +63,16 @@ class NIMClient:
 
     def chat_completion(self, history_text: str, question: str, context: str) -> str:
         """Invoke the answer chain and return plain prose."""
+        cb = langfuse_callback()
+        chain_config = {"callbacks": [cb]} if cb else {}
         try:
             answer = self._chain.invoke(
                 {
                     "history_text": history_text,
                     "question": question,
                     "context": context,
-                }
+                },
+                config=chain_config,
             )
         except Exception as e:
             logger.exception("Error during NIM chat completion via LangChain: %s", e)

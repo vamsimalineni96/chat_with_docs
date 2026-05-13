@@ -2,6 +2,7 @@ import time
 
 from src.utils import config
 from src.utils.errors import CacheError, ConversationServiceError, InferenceError
+from src.utils.observability import observe, update_current_trace
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import get_cache_store
 from src.utils.services.conversation_store import get_conversation_service
@@ -11,6 +12,7 @@ cache_service = get_cache_store()
 converstion_service = get_conversation_service()
 
 
+@observe(name="cache_lookup")
 def cache_output(payload, q_embed):
     """
     Try to fetch a cached answer.
@@ -18,6 +20,18 @@ def cache_output(payload, q_embed):
     Raises:
         CacheError: if cache lookup fails unexpectedly.
     """
+    update_current_trace(
+        user_id=payload.user_external_id,
+        session_id=str(payload.conversation_id) if payload.conversation_id else None,
+        tags=[
+            f"prompt:{config.PROMPT_VERSION}",
+            f"collection:{payload.collection_name}",
+            f"domain:{config.METRICS_DOMAIN}",
+            "cache-path",
+            "debug" if getattr(payload, "debug", False) else "normal",
+        ],
+        metadata={"question": payload.question, "cache_enabled": config.TOGGLE_CACHE},
+    )
     try:
         cached = cache_service.search_similar(
             query=payload.question,
@@ -39,6 +53,7 @@ def cache_output(payload, q_embed):
     return None
 
 
+@observe(name="rag_output")
 def rag_output(
     payload,
     db,
@@ -58,6 +73,18 @@ def rag_output(
         ConversationServiceError: for DB issues.
         InferenceError: for RAG/LLM/Milvus issues.
     """
+    update_current_trace(
+        user_id=user.external_id,
+        session_id=str(conversation.id),
+        tags=[
+            f"prompt:{config.PROMPT_VERSION}",
+            f"collection:{payload.collection_name}",
+            f"domain:{config.METRICS_DOMAIN}",
+            "rag-path",
+            "debug" if getattr(payload, "debug", False) else "normal",
+        ],
+        metadata={"question": payload.question, "cache_enabled": config.TOGGLE_CACHE},
+    )
     t0 = time.perf_counter()
 
     logger.info("Accessing recent messages from the database")

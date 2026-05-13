@@ -68,3 +68,11 @@ PDF_DIR = os.getenv("PDF_DIR", "pdfs")
 # --- Redis lock ---
 REDIS_LOCK_PREFIX = os.getenv("REDIS_LOCK_PREFIX", "lock:conversation:")
 REDIS_LOCK_TTL_SECONDS = int(os.getenv("REDIS_LOCK_TTL_SECONDS", "60"))
+
+# --- Langfuse (LLM observability) ---
+LANGFUSE_ENABLED = _bool("LANGFUSE_ENABLED", False)
+LANGFUSE_HOST = os.getenv("LANGFUSE_HOST", "http://localhost:3000")
+LANGFUSE_PUBLIC_KEY = os.getenv("LANGFUSE_PUBLIC_KEY", "")
+LANGFUSE_SECRET_KEY = os.getenv("LANGFUSE_SECRET_KEY", "")
+LANGFUSE_FLUSH_AT = int(os.getenv("LANGFUSE_FLUSH_AT", "15"))
+LANGFUSE_FLUSH_INTERVAL = float(os.getenv("LANGFUSE_FLUSH_INTERVAL", "1.0"))
