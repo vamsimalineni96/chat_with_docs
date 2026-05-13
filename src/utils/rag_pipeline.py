@@ -1,11 +1,15 @@
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TypedDict
 
-from langchain_core.runnables import RunnableLambda
+from langgraph.graph import StateGraph, END
 
 from src.utils import config
 from src.utils.errors import InferenceError
-from src.utils.observability import observe, update_current_observation
+from src.utils.observability import (
+    observe,
+    update_current_observation,
+    langfuse_callback,
+)
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
@@ -70,43 +74,107 @@ def _retrieve_for_query(
     return results
 
 
-def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
+class RAGState(TypedDict, total=False):
+    """State that flows through the LangGraph RAG pipeline.
+
+    `timings` and `debug` are mutable dicts owned by the caller — nodes mutate
+    them in place so `answer_question` can read the final values after
+    `graph.invoke` returns. Top-level fields (`retrieved`, `reranked`,
+    `context`, `answer`, `history_text`) are returned by nodes and merged into
+    state by LangGraph's default channel reducer (replace).
     """
-    LCEL sub-chain that runs *after* retrieval:
-      input: {question, retrieved, history, _timings, _debug?}
-      rerank -> slice top_k -> assemble (context + history_text) -> chat completion
+    question: str
+    history: List[Dict]
+    history_text: str
+    retrieved: List[Dict[str, Any]]
+    reranked: List[Dict[str, Any]]
+    context: str
+    answer: str
+    timings: Dict[str, float]
+    debug: Optional[Dict[str, Any]]
+
+
+def build_rag_graph(
+    milvus_store: MilvusStoreHandler,
+    reranker: NVidiaReranker,
+    llm: NIMClient,
+):
+    """
+    Compile the RAG graph:
+
+        retrieve ──► [retrieved empty?] ──► empty_response ──► END
+                              │
+                              └► rerank ──► assemble ──► generate ──► END
     """
 
-    def rerank(payload: Dict[str, Any]) -> Dict[str, Any]:
-        retrieved = payload["retrieved"]
-        reranked = reranker.execute(question=payload["question"], retrieved_chunks=retrieved)
-        # Slice down to TOP_K for the LLM context.
+    def retrieve_node(state: RAGState) -> Dict[str, Any]:
+        question = state["question"]
+        timings = state["timings"]
+        debug = state.get("debug")
+
+        logger.info("Retrieving context from Milvus DB (hybrid dense + BM25)")
+        try:
+            timings["t_milvus_start"] = time.perf_counter()
+            retrieved = _retrieve_for_query(
+                milvus_store, question, top_k=config.RETRIEVE_K
+            )
+            timings["t_milvus_end"] = time.perf_counter()
+        except Exception as e:
+            logger.exception("Failed to retrieve context from Milvus: %s", e)
+            raise InferenceError("Failed to retrieve context from Milvus.") from e
+
+        if debug is not None:
+            debug["retrieved_chunks"] = retrieved
+            # Hybrid-retrieval diagnostic: re-run dense-only and BM25-only
+            # searches so the UI can show what each component contributes vs.
+            # the fused list.
+            try:
+                debug["dense_only_chunks"] = milvus_store.search_dense_only(
+                    query=question, top_k=config.RETRIEVE_K
+                )
+            except Exception as e:
+                logger.warning("Dense-only diagnostic search failed (non-fatal): %s", e)
+                debug["dense_only_chunks"] = []
+            try:
+                debug["sparse_only_chunks"] = milvus_store.search_sparse_only(
+                    query=question, top_k=config.RETRIEVE_K
+                )
+            except Exception as e:
+                logger.warning("Sparse-only diagnostic search failed (non-fatal): %s", e)
+                debug["sparse_only_chunks"] = []
+
+        return {"retrieved": retrieved}
+
+    def rerank_node(state: RAGState) -> Dict[str, Any]:
+        reranked = reranker.execute(
+            question=state["question"], retrieved_chunks=state["retrieved"]
+        )
         sliced = reranked[: config.TOP_K]
-        debug = payload.get("_debug")
+        debug = state.get("debug")
         if debug is not None:
             debug["reranked_chunks"] = reranked
             debug["reranked_top_k"] = sliced
-        return {**payload, "reranked": sliced}
+        return {"reranked": sliced}
 
-    def assemble(payload: Dict[str, Any]) -> Dict[str, Any]:
-        context = build_context(payload["reranked"])
-        history_text = payload.get("history_text") or format_history_for_prompt(
-            payload["history"], max_turns=config.HISTORY_MAX_TURNS
+    def assemble_node(state: RAGState) -> Dict[str, Any]:
+        context = build_context(state["reranked"])
+        history_text = state.get("history_text") or format_history_for_prompt(
+            state["history"], max_turns=config.HISTORY_MAX_TURNS
         )
-        debug = payload.get("_debug")
+        debug = state.get("debug")
         if debug is not None:
             debug["history_text"] = history_text
-        return {**payload, "context": context, "history_text": history_text}
+        return {"context": context, "history_text": history_text}
 
-    def generate(payload: Dict[str, Any]) -> str:
-        timings = payload["_timings"]
-        debug = payload.get("_debug")
+    def generate_node(state: RAGState) -> Dict[str, Any]:
+        timings = state["timings"]
+        debug = state.get("debug")
         if debug is not None:
             try:
                 rendered = llm._prompt.format_messages(
-                    history_text=payload["history_text"],
-                    question=payload["question"],
-                    context=payload["context"],
+                    history_text=state["history_text"],
+                    question=state["question"],
+                    context=state["context"],
                 )
                 debug["rendered_prompt"] = [
                     {"role": getattr(m, "type", "unknown"), "content": m.content}
@@ -118,18 +186,50 @@ def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
 
         timings["t_llm_start"] = time.perf_counter()
         answer = llm.chat_completion(
-            history_text=payload["history_text"],
-            question=payload["question"],
-            context=payload["context"],
+            history_text=state["history_text"],
+            question=state["question"],
+            context=state["context"],
         )
         timings["t_llm_end"] = time.perf_counter()
-        return answer
+        return {"answer": answer}
 
-    return (
-        RunnableLambda(rerank)
-        | RunnableLambda(assemble)
-        | RunnableLambda(generate)
+    def empty_response_node(state: RAGState) -> Dict[str, Any]:
+        # No retrieval hits — short-circuit with an apology. Still populate
+        # LLM timings so the upstream metrics logger has all four stamps.
+        logger.info("No relevant context found in the vector store.")
+        timings = state["timings"]
+        t_end = timings.get("t_milvus_end", time.perf_counter())
+        timings["t_llm_start"] = t_end
+        timings["t_llm_end"] = t_end
+        return {
+            "answer": (
+                "I couldn't find anything in the indexed document that touches on that. "
+                "Could you try rephrasing, or asking about a different topic from the book?"
+            ),
+        }
+
+    def route_after_retrieve(state: RAGState) -> str:
+        return "empty_response" if not state.get("retrieved") else "rerank"
+
+    graph = StateGraph(RAGState)
+    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("rerank", rerank_node)
+    graph.add_node("assemble", assemble_node)
+    graph.add_node("generate", generate_node)
+    graph.add_node("empty_response", empty_response_node)
+
+    graph.set_entry_point("retrieve")
+    graph.add_conditional_edges(
+        "retrieve",
+        route_after_retrieve,
+        {"rerank": "rerank", "empty_response": "empty_response"},
     )
+    graph.add_edge("rerank", "assemble")
+    graph.add_edge("assemble", "generate")
+    graph.add_edge("generate", END)
+    graph.add_edge("empty_response", END)
+
+    return graph.compile()
 
 
 @observe(name="answer_question")
@@ -141,13 +241,12 @@ def answer_question(
     debug: bool = False,
 ) -> Dict[str, Any]:
     """
-    Main RAG orchestration.
+    Main RAG orchestration (LangGraph).
 
     Pipeline:
       1. Hybrid (dense + BM25) retrieval for the original question, RETRIEVE_K chunks.
-      2. Rerank chunks against the question.
-      3. Slice to TOP_K and assemble prompt.
-      4. Call the LLM.
+      2. If retrieval is empty → apology branch and short-circuit.
+      3. Otherwise: rerank → slice to TOP_K → assemble prompt → call the LLM.
 
     Returns a dict with answer, stage timings, and (when debug=True) intermediate
     artifacts.
@@ -162,73 +261,37 @@ def answer_question(
     debug_info: Optional[Dict[str, Any]] = {} if debug else None
     history_text = format_history_for_prompt(history, max_turns=config.HISTORY_MAX_TURNS)
 
-    logger.info("Retrieving context from Milvus DB (hybrid dense + BM25)")
-    try:
-        t_milvus_start = time.perf_counter()
-        retrieved = _retrieve_for_query(
-            milvus_store, question, top_k=config.RETRIEVE_K
-        )
-        t_milvus_end = time.perf_counter()
-    except Exception as e:
-        logger.exception("Failed to retrieve context from Milvus: %s", e)
-        raise InferenceError("Failed to retrieve context from Milvus.") from e
-
-    if debug_info is not None:
-        debug_info["retrieved_chunks"] = retrieved
-        # Hybrid-retrieval diagnostic: re-run dense-only and BM25-only searches
-        # so the UI can show what each component contributes vs. the fused list.
-        try:
-            debug_info["dense_only_chunks"] = milvus_store.search_dense_only(
-                query=question, top_k=config.RETRIEVE_K
-            )
-        except Exception as e:
-            logger.warning("Dense-only diagnostic search failed (non-fatal): %s", e)
-            debug_info["dense_only_chunks"] = []
-        try:
-            debug_info["sparse_only_chunks"] = milvus_store.search_sparse_only(
-                query=question, top_k=config.RETRIEVE_K
-            )
-        except Exception as e:
-            logger.warning("Sparse-only diagnostic search failed (non-fatal): %s", e)
-            debug_info["sparse_only_chunks"] = []
-
-    if not retrieved:
-        logger.info("No relevant context found in the vector store.")
-        return {
-            "answer": "I couldn't find anything in the indexed document that touches on that. "
-                      "Could you try rephrasing, or asking about a different topic from the book?",
-            "t_milvus_start": t_milvus_start,
-            "t_milvus_end": t_milvus_end,
-            "t_llm_start": t_milvus_start,
-            "t_llm_end": t_milvus_end,
-            "debug": debug_info,
-        }
-
-    chain = build_generation_chain(nim_reranker, nim_client)
+    graph = build_rag_graph(milvus_store, nim_reranker, nim_client)
     timings: Dict[str, float] = {}
-    chain_input: Dict[str, Any] = {
+    initial_state: RAGState = {
         "question": question,
-        "retrieved": retrieved,
         "history": history,
         "history_text": history_text,
-        "_timings": timings,
+        "timings": timings,
+        "debug": debug_info,
     }
-    if debug_info is not None:
-        chain_input["_debug"] = debug_info
+
+    cb = langfuse_callback()
+    invoke_config = {"callbacks": [cb]} if cb else {}
 
     try:
-        logger.info("Invoking generation chain (rerank -> prompt -> LLM)")
-        answer = chain.invoke(chain_input)
+        logger.info("Invoking RAG graph (retrieve -> [rerank -> assemble -> generate])")
+        final_state = graph.invoke(initial_state, config=invoke_config)
     except InferenceError:
         raise
     except Exception as e:
-        logger.exception("Unexpected error from generation chain: %s", e)
-        raise InferenceError("Unexpected error from generation chain.") from e
+        logger.exception("Unexpected error from RAG graph: %s", e)
+        raise InferenceError("Unexpected error from RAG graph.") from e
 
+    answer = final_state["answer"]
+    retrieved = final_state.get("retrieved") or []
+
+    t_milvus_start = timings.get("t_milvus_start", time.perf_counter())
+    t_milvus_end = timings.get("t_milvus_end", t_milvus_start)
     t_llm_start = timings.get("t_llm_start", t_milvus_end)
     t_llm_end = timings.get("t_llm_end", t_llm_start)
 
-    if config.TOGGLE_CACHE and not debug:
+    if config.TOGGLE_CACHE and not debug and retrieved:
         try:
             context_chunk_ids = [item.get("id") for item in retrieved if item.get("id")]
             get_cache_store().put_entry(
