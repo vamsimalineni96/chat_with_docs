@@ -12,6 +12,7 @@ Usage:
 """
 
 from langchain_core.messages import AIMessage
+from src.root import PROJECT_ROOT
 from src.utils.rag_pipeline import build_agent_graph, make_tool_node
 from src.utils.tools import build_search_chunks_tool
 
@@ -40,20 +41,23 @@ def main():
 
     g = graph.get_graph()
 
+    mmd_path = PROJECT_ROOT / "graph.mmd"
+    png_path = PROJECT_ROOT / "graph.png"
+
     # 1. Mermaid source — always works, no extra deps.
     mermaid_src = g.draw_mermaid()
     print("─── Mermaid source ─── (paste into https://mermaid.live)\n")
     print(mermaid_src)
-    with open("graph.mmd", "w") as f:
+    with open(mmd_path, "w") as f:
         f.write(mermaid_src)
-    print("→ saved to graph.mmd\n")
+    print(f"→ saved to {mmd_path}\n")
 
     # 2. PNG via mermaid.ink (needs internet but no local deps).
     try:
         png_bytes = g.draw_mermaid_png()
-        with open("graph.png", "wb") as f:
+        with open(png_path, "wb") as f:
             f.write(png_bytes)
-        print("→ saved rendered PNG to graph.png\n")
+        print(f"→ saved rendered PNG to {png_path}\n")
     except Exception as e:
         print(f"(skip PNG: {e})\n")
 
