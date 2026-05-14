@@ -1,36 +1,97 @@
-import time
-from typing import List, Dict, Any, Optional, TypedDict
+"""Agentic RAG pipeline (LangGraph).
 
+Replaces the previous fixed `retrieve → rerank → assemble → generate` chain.
+The LLM now drives the loop: it sees a `search_chunks` tool and decides when
+(and how many times) to retrieve.
+
+Graph shape:
+
+      ┌─────────────────────────────┐
+      │                             │
+      ▼                             │
+    agent ── tool_calls? ── tools ──┘
+      │           no
+      ▼
+     END
+
+`agent_node` calls the LLM with tools bound. If the response has tool_calls
+we route to `tools` (LangGraph's built-in `ToolNode`), which executes them
+and returns ToolMessages. Those get appended to the message list and we loop
+back to `agent`. When the LLM returns a plain answer (no tool_calls), we hit
+END.
+
+Bounded by `MAX_AGENT_ITERATIONS` to avoid runaway loops.
+"""
+
+import time
+from typing import List, Dict, Any, Optional, TypedDict, Annotated
+
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
 
 from src.utils import config
 from src.utils.errors import InferenceError
-from src.utils.observability import (
-    observe,
-    update_current_observation,
-    langfuse_callback,
-)
-from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
+from src.utils.observability import observe, langfuse_callback
+from src.utils.services.chunk_ranking import NVidiaReranker
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
-from src.utils.services.chunk_ranking import NVidiaReranker
+from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
+from src.utils.tools import build_search_chunks_tool
 
 
-def build_context(chunks: List[Dict[str, Any]]) -> str:
-    parts: List[str] = []
-    for i, c in enumerate(chunks, start=1):
-        score = c.get("score")
-        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
-        parts.append(
-            f"[Chunk {i} | score={score_str} | source={c.get('source')}]\n{c['text']}\n"
-        )
-    return "\n\n".join(parts)
+MAX_AGENT_ITERATIONS = 5
+
+
+def make_tool_node(tools: List):
+    """Build a tool-executor node.
+
+    Looks at the last AIMessage in `state["messages"]`, executes every
+    tool_call it carries, and returns a list of ToolMessages that
+    `add_messages` will append to the running message trail.
+
+    Equivalent to `langgraph.prebuilt.ToolNode([...])` but written inline so
+    we don't depend on the prebuilt package (its version pinning is fussy).
+    """
+    tool_map = {t.name: t for t in tools}
+
+    def tool_node(state: "AgentState") -> Dict[str, Any]:
+        last_msg = state["messages"][-1]
+        tool_calls = getattr(last_msg, "tool_calls", None) or []
+        outputs: List[ToolMessage] = []
+        for tc in tool_calls:
+            name = tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", None)
+            args = (tc.get("args") if isinstance(tc, dict) else getattr(tc, "args", {})) or {}
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+
+            tool = tool_map.get(name)
+            if tool is None:
+                content = f"Error: unknown tool {name!r}"
+                logger.warning("LLM requested unknown tool %r", name)
+            else:
+                try:
+                    result = tool.invoke(args)
+                    content = result if isinstance(result, str) else str(result)
+                except Exception as e:
+                    logger.exception("Tool %s raised — returning error message to LLM", name)
+                    content = f"Error calling {name}: {e}"
+            outputs.append(ToolMessage(content=content, tool_call_id=tc_id, name=name))
+        return {"messages": outputs}
+
+    return tool_node
 
 
 def format_history_for_prompt(history: List[Dict], max_turns: int = config.HISTORY_MAX_TURNS) -> str:
+    """Render history as plain text. Retained for debug capture and any
+    external callers that still want a single string."""
     if not history:
         return "None"
-
     trimmed = history[-max_turns:]
     lines = []
     for msg in trimmed:
@@ -48,187 +109,91 @@ def format_history_for_prompt(history: List[Dict], max_turns: int = config.HISTO
     return "\n".join(lines)
 
 
-@observe(name="hybrid_retrieve", as_type="span")
-def _retrieve_for_query(
-    milvus_store: MilvusStoreHandler,
-    query: str,
-    top_k: int,
-) -> List[Dict[str, Any]]:
-    """Hybrid (dense + BM25) retrieval for a single query string."""
-    results = milvus_store.search_similar_chunks(query=query, top_k=top_k)
-    update_current_observation(
-        input={"query": query, "top_k": top_k},
-        output={
-            "count": len(results),
-            "top_chunks": [
-                {
-                    "score": r.get("score"),
-                    "source": r.get("source"),
-                    "chunk_order": r.get("chunk_order"),
-                    "text_preview": (r.get("text") or "")[:200],
-                }
-                for r in results[:5]
-            ],
-        },
-    )
-    return results
+def history_to_messages(
+    history: List[Dict],
+    max_turns: int = config.HISTORY_MAX_TURNS,
+) -> List[BaseMessage]:
+    """Convert stored chat history rows to LangChain BaseMessages."""
+    if not history:
+        return []
+    # max_turns is "exchanges"; multiply by 2 to cover user+assistant pairs.
+    trimmed = history[-(max_turns * 2):]
+    out: List[BaseMessage] = []
+    for m in trimmed:
+        role = m.get("role", "")
+        content = m.get("content", "") or ""
+        if role == "user":
+            out.append(HumanMessage(content=content))
+        elif role == "assistant":
+            out.append(AIMessage(content=content))
+    return out
 
 
-class RAGState(TypedDict, total=False):
-    """State that flows through the LangGraph RAG pipeline.
+class AgentState(TypedDict, total=False):
+    """State for the agentic loop.
 
-    `timings` and `debug` are mutable dicts owned by the caller — nodes mutate
-    them in place so `answer_question` can read the final values after
-    `graph.invoke` returns. Top-level fields (`retrieved`, `reranked`,
-    `context`, `answer`, `history_text`) are returned by nodes and merged into
-    state by LangGraph's default channel reducer (replace).
+    `messages` uses LangGraph's `add_messages` reducer so node returns of
+    `{"messages": [new_msg]}` are *appended* to the running list rather than
+    replacing it. Other fields use the default replace reducer.
+
+    `timings` and `debug` are mutable dicts owned by the caller — nodes
+    mutate them in place so the caller can read final values after invoke.
     """
-    question: str
-    history: List[Dict]
-    history_text: str
-    retrieved: List[Dict[str, Any]]
-    reranked: List[Dict[str, Any]]
-    context: str
-    answer: str
+    messages: Annotated[List[BaseMessage], add_messages]
     timings: Dict[str, float]
     debug: Optional[Dict[str, Any]]
+    iterations: int
 
 
-def build_rag_graph(
-    milvus_store: MilvusStoreHandler,
-    reranker: NVidiaReranker,
-    llm: NIMClient,
-):
-    """
-    Compile the RAG graph:
+def build_agent_graph(llm_with_tools, tool_node):
+    """Compile the agent ↔ tools loop graph."""
 
-        retrieve ──► [retrieved empty?] ──► empty_response ──► END
-                              │
-                              └► rerank ──► assemble ──► generate ──► END
-    """
-
-    def retrieve_node(state: RAGState) -> Dict[str, Any]:
-        question = state["question"]
+    def agent_node(state: AgentState) -> Dict[str, Any]:
         timings = state["timings"]
-        debug = state.get("debug")
+        iter_n = state.get("iterations", 0)
 
-        logger.info("Retrieving context from Milvus DB (hybrid dense + BM25)")
-        try:
-            timings["t_milvus_start"] = time.perf_counter()
-            retrieved = _retrieve_for_query(
-                milvus_store, question, top_k=config.RETRIEVE_K
-            )
-            timings["t_milvus_end"] = time.perf_counter()
-        except Exception as e:
-            logger.exception("Failed to retrieve context from Milvus: %s", e)
-            raise InferenceError("Failed to retrieve context from Milvus.") from e
+        t_start = time.perf_counter()
+        timings.setdefault("t_llm_start", t_start)
 
-        if debug is not None:
-            debug["retrieved_chunks"] = retrieved
-            # Hybrid-retrieval diagnostic: re-run dense-only and BM25-only
-            # searches so the UI can show what each component contributes vs.
-            # the fused list.
-            try:
-                debug["dense_only_chunks"] = milvus_store.search_dense_only(
-                    query=question, top_k=config.RETRIEVE_K
-                )
-            except Exception as e:
-                logger.warning("Dense-only diagnostic search failed (non-fatal): %s", e)
-                debug["dense_only_chunks"] = []
-            try:
-                debug["sparse_only_chunks"] = milvus_store.search_sparse_only(
-                    query=question, top_k=config.RETRIEVE_K
-                )
-            except Exception as e:
-                logger.warning("Sparse-only diagnostic search failed (non-fatal): %s", e)
-                debug["sparse_only_chunks"] = []
-
-        return {"retrieved": retrieved}
-
-    def rerank_node(state: RAGState) -> Dict[str, Any]:
-        reranked = reranker.execute(
-            question=state["question"], retrieved_chunks=state["retrieved"]
-        )
-        sliced = reranked[: config.TOP_K]
-        debug = state.get("debug")
-        if debug is not None:
-            debug["reranked_chunks"] = reranked
-            debug["reranked_top_k"] = sliced
-        return {"reranked": sliced}
-
-    def assemble_node(state: RAGState) -> Dict[str, Any]:
-        context = build_context(state["reranked"])
-        history_text = state.get("history_text") or format_history_for_prompt(
-            state["history"], max_turns=config.HISTORY_MAX_TURNS
-        )
-        debug = state.get("debug")
-        if debug is not None:
-            debug["history_text"] = history_text
-        return {"context": context, "history_text": history_text}
-
-    def generate_node(state: RAGState) -> Dict[str, Any]:
-        timings = state["timings"]
-        debug = state.get("debug")
-        if debug is not None:
-            try:
-                rendered = llm._prompt.format_messages(
-                    history_text=state["history_text"],
-                    question=state["question"],
-                    context=state["context"],
-                )
-                debug["rendered_prompt"] = [
-                    {"role": getattr(m, "type", "unknown"), "content": m.content}
-                    for m in rendered
-                ]
-            except Exception as e:
-                logger.warning("Failed to capture rendered prompt for debug: %s", e)
-                debug["rendered_prompt"] = []
-
-        timings["t_llm_start"] = time.perf_counter()
-        answer = llm.chat_completion(
-            history_text=state["history_text"],
-            question=state["question"],
-            context=state["context"],
-        )
+        response = llm_with_tools.invoke(state["messages"])
         timings["t_llm_end"] = time.perf_counter()
-        return {"answer": answer}
 
-    def empty_response_node(state: RAGState) -> Dict[str, Any]:
-        # No retrieval hits — short-circuit with an apology. Still populate
-        # LLM timings so the upstream metrics logger has all four stamps.
-        logger.info("No relevant context found in the vector store.")
-        timings = state["timings"]
-        t_end = timings.get("t_milvus_end", time.perf_counter())
-        timings["t_llm_start"] = t_end
-        timings["t_llm_end"] = t_end
-        return {
-            "answer": (
-                "I couldn't find anything in the indexed document that touches on that. "
-                "Could you try rephrasing, or asking about a different topic from the book?"
-            ),
-        }
+        if state.get("debug") is not None:
+            dbg = state["debug"]
+            steps = dbg.setdefault("agent_steps", [])
+            steps.append(
+                {
+                    "iteration": iter_n,
+                    "tool_calls": getattr(response, "tool_calls", []) or [],
+                    "content_preview": (getattr(response, "content", "") or "")[:300],
+                }
+            )
 
-    def route_after_retrieve(state: RAGState) -> str:
-        return "empty_response" if not state.get("retrieved") else "rerank"
+        return {"messages": [response], "iterations": iter_n + 1}
 
-    graph = StateGraph(RAGState)
-    graph.add_node("retrieve", retrieve_node)
-    graph.add_node("rerank", rerank_node)
-    graph.add_node("assemble", assemble_node)
-    graph.add_node("generate", generate_node)
-    graph.add_node("empty_response", empty_response_node)
+    def should_continue(state: AgentState) -> str:
+        last_msg = state["messages"][-1]
+        tool_calls = getattr(last_msg, "tool_calls", None)
+        if not tool_calls:
+            return "end"
+        if state.get("iterations", 0) >= MAX_AGENT_ITERATIONS:
+            logger.warning(
+                "Agent hit iteration cap (%d) — forcing END with last response.",
+                MAX_AGENT_ITERATIONS,
+            )
+            return "end"
+        return "tools"
 
-    graph.set_entry_point("retrieve")
+    graph = StateGraph(AgentState)
+    graph.add_node("agent", agent_node)
+    graph.add_node("tools", tool_node)
+    graph.set_entry_point("agent")
     graph.add_conditional_edges(
-        "retrieve",
-        route_after_retrieve,
-        {"rerank": "rerank", "empty_response": "empty_response"},
+        "agent",
+        should_continue,
+        {"tools": "tools", "end": END},
     )
-    graph.add_edge("rerank", "assemble")
-    graph.add_edge("assemble", "generate")
-    graph.add_edge("generate", END)
-    graph.add_edge("empty_response", END)
-
+    graph.add_edge("tools", "agent")
     return graph.compile()
 
 
@@ -240,65 +205,98 @@ def answer_question(
     history: List[Dict],
     debug: bool = False,
 ) -> Dict[str, Any]:
-    """
-    Main RAG orchestration (LangGraph).
+    """Agentic RAG orchestration.
 
-    Pipeline:
-      1. Hybrid (dense + BM25) retrieval for the original question, RETRIEVE_K chunks.
-      2. If retrieval is empty → apology branch and short-circuit.
-      3. Otherwise: rerank → slice to TOP_K → assemble prompt → call the LLM.
+    The LLM is given the `search_chunks` tool and drives the loop: it can
+    retrieve zero, one, or multiple times before producing the final answer.
+    Bounded by `MAX_AGENT_ITERATIONS`.
 
-    Returns a dict with answer, stage timings, and (when debug=True) intermediate
-    artifacts.
+    Returns a dict with answer, stage timings, and (when debug=True) the
+    full message trail + per-step tool_calls.
 
     Raises:
-        InferenceError: for retrieval/rerank/LLM failures.
+        InferenceError: for unrecoverable LLM / graph failures.
     """
     milvus_store = MilvusStoreHandler(collection_name=collection_name)
+    reranker = NVidiaReranker()
     nim_client = NIMClient()
-    nim_reranker = NVidiaReranker()
 
     debug_info: Optional[Dict[str, Any]] = {} if debug else None
-    history_text = format_history_for_prompt(history, max_turns=config.HISTORY_MAX_TURNS)
 
-    graph = build_rag_graph(milvus_store, nim_reranker, nim_client)
+    # Build the tool, bind it to the LLM, wrap in a ToolNode.
+    search_chunks = build_search_chunks_tool(milvus_store, reranker)
+    tools = [search_chunks]
+    llm_with_tools = nim_client.llm.bind_tools(tools)
+    tool_node = make_tool_node(tools)
+
+    graph = build_agent_graph(llm_with_tools, tool_node)
+
+    # Initial messages: system + prior turns + current question.
+    history_msgs = history_to_messages(history)
+    initial_messages: List[BaseMessage] = [
+        SystemMessage(content=nim_client.system_prompt),
+        *history_msgs,
+        HumanMessage(content=question),
+    ]
+
     timings: Dict[str, float] = {}
-    initial_state: RAGState = {
-        "question": question,
-        "history": history,
-        "history_text": history_text,
+    initial_state: AgentState = {
+        "messages": initial_messages,
         "timings": timings,
         "debug": debug_info,
+        "iterations": 0,
     }
 
     cb = langfuse_callback()
     invoke_config = {"callbacks": [cb]} if cb else {}
 
+    t_graph_start = time.perf_counter()
     try:
-        logger.info("Invoking RAG graph (retrieve -> [rerank -> assemble -> generate])")
+        logger.info(
+            "Invoking agentic RAG graph (max %d iterations)",
+            MAX_AGENT_ITERATIONS,
+        )
         final_state = graph.invoke(initial_state, config=invoke_config)
     except InferenceError:
         raise
     except Exception as e:
-        logger.exception("Unexpected error from RAG graph: %s", e)
-        raise InferenceError("Unexpected error from RAG graph.") from e
+        logger.exception("Unexpected error from agentic RAG graph: %s", e)
+        raise InferenceError("Unexpected error from agentic RAG graph.") from e
+    t_graph_end = time.perf_counter()
 
-    answer = final_state["answer"]
-    retrieved = final_state.get("retrieved") or []
+    # The final answer is the content of the last AIMessage in the trail.
+    final_msg = final_state["messages"][-1]
+    answer = (getattr(final_msg, "content", None) or "").strip()
 
-    t_milvus_start = timings.get("t_milvus_start", time.perf_counter())
-    t_milvus_end = timings.get("t_milvus_end", t_milvus_start)
-    t_llm_start = timings.get("t_llm_start", t_milvus_end)
-    t_llm_end = timings.get("t_llm_end", t_llm_start)
+    # Did any retrieval actually happen? Look for ToolMessages.
+    retrieved_any = any(isinstance(m, ToolMessage) for m in final_state["messages"])
+    iterations_used = final_state.get("iterations", 0)
 
-    if config.TOGGLE_CACHE and not debug and retrieved:
+    if debug_info is not None:
+        debug_info["total_iterations"] = iterations_used
+        debug_info["retrieved_any"] = retrieved_any
+        debug_info["final_messages"] = [
+            {
+                "type": getattr(m, "type", "unknown"),
+                "content": (getattr(m, "content", "") or "")[:500],
+                "tool_calls": getattr(m, "tool_calls", None) or [],
+                "tool_call_id": getattr(m, "tool_call_id", None),
+                "name": getattr(m, "name", None),
+            }
+            for m in final_state["messages"]
+        ]
+
+    # Cache write — only when retrieval happened and we're not in debug.
+    # In agentic mode we don't track exact chunk IDs across multiple tool
+    # calls, so context_chunk_ids stays empty; the cache key is question +
+    # model + prompt_version anyway.
+    if config.TOGGLE_CACHE and not debug and retrieved_any and answer:
         try:
-            context_chunk_ids = [item.get("id") for item in retrieved if item.get("id")]
             get_cache_store().put_entry(
                 question_text=question,
                 query_vec=query_vec,
                 answer_text=answer,
-                context_chunk_ids=context_chunk_ids,
+                context_chunk_ids=[],
                 model_name=config.LLM_MODEL,
                 prompt_version=config.PROMPT_VERSION,
                 temperature=config.TEMPERATURE,
@@ -307,6 +305,15 @@ def answer_question(
             logger.info("Stored Q/A pair in semantic cache.")
         except Exception as e:
             logger.exception("Cache write failed (non-fatal): %s", e)
+
+    # Timing breakdown: agentic mode interleaves LLM and retrieval, so the
+    # old "milvus_ms vs llm_ms" split no longer cleanly applies. We report
+    # the whole graph as LLM time and leave milvus stamps as zero-duration
+    # markers so the upstream metrics logger keeps working.
+    t_llm_start = timings.get("t_llm_start", t_graph_start)
+    t_llm_end = timings.get("t_llm_end", t_graph_end)
+    t_milvus_start = t_llm_start
+    t_milvus_end = t_llm_start
 
     return {
         "answer": answer,
