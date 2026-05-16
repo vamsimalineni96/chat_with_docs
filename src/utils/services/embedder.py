@@ -1,9 +1,8 @@
-from typing import List, Tuple
 
 from langchain_nvidia_ai_endpoints import NVIDIAEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from src.utils.config import NVIDIA_API_KEY, EMBED_MODEL
+from src.utils.config import EMBED_MODEL, NVIDIA_API_KEY
 from src.utils.errors import EmbeddingError
 from src.utils.observability import observe, update_current_generation
 from src.utils.services.logger_config import logger
@@ -35,7 +34,7 @@ class EmbeddingHandler:
         )
 
     @observe(as_type="embedding", name="embed_query")
-    def get_embedding(self, text: str, input_type: str = "query") -> List[float]:
+    def get_embedding(self, text: str, input_type: str = "query") -> list[float]:
         try:
             if input_type == "passage":
                 vector = self.embeddings.embed_documents([text])[0]
@@ -59,7 +58,7 @@ class EmbeddingHandler:
     @observe(as_type="embedding", name="embed_passage_batch")
     def get_document_embeddings(
         self, chunk_size: int, chunk_overlap: int, long_text: str
-    ) -> Tuple[List[List[float]], List[str]]:
+    ) -> tuple[list[list[float]], list[str]]:
         logger.info(
             "Splitting text into chunks with size %d and overlap %d",
             chunk_size,

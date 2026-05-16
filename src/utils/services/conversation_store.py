@@ -1,14 +1,12 @@
-from typing import List, Optional
 
-from sqlalchemy import func, desc
+from sqlalchemy import desc, func
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from src.utils.db import models
 from src.utils.errors import (
-    ConversationServiceError,
     ConversationOwnershipError,
-    DatabaseError,
+    ConversationServiceError,
 )
 from src.utils.services.logger_config import logger
 
@@ -56,7 +54,7 @@ class ConversationService:
     def create_conversation(
         db: Session,
         user: models.User,
-        title: Optional[str] = None,
+        title: str | None = None,
     ) -> models.Conversation:
         """
         Create a new conversation for the user.
@@ -83,7 +81,7 @@ class ConversationService:
         db: Session,
         conversation_id: str,
         user: models.User,
-    ) -> Optional[models.Conversation]:
+    ) -> models.Conversation | None:
         """
         Get conversation by ID, filtered by user.
 
@@ -192,7 +190,7 @@ class ConversationService:
         db: Session,
         user: models.User,
         limit: int = 100,
-    ) -> List[models.Conversation]:
+    ) -> list[models.Conversation]:
         """
         List a user's conversations, most-recently-updated first.
 
@@ -223,7 +221,7 @@ class ConversationService:
         conversation: models.Conversation,
         user: models.User,
         limit: int = 20,
-    ) -> List[models.Message]:
+    ) -> list[models.Message]:
         """
         Get recent messages in chronological order.
 

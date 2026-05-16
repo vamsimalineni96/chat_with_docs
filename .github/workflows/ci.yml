@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel in-progress runs for the same PR/branch when a new commit lands.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint-and-compile:
+    name: Lint & compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff==0.6.9
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Compile-check all Python sources
+        run: python -m compileall -q app.py ui.py src scripts
+
+  dep-audit:
+    name: Dependency vulnerability audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pip-audit
+        run: pip install pip-audit==2.7.3
+
+      # --strict makes the job fail on any known CVE in requirements.txt.
+      # The ignores below are langchain-ecosystem CVEs whose fixes only land in
+      # major versions (langchain-core >=1.x, langchain-text-splitters >=1.1.2),
+      # which requires a refactor. Tracked in issue #1 (langchain 0.3.x -> 1.x).
+      #
+      # langchain-core (5 CVEs):
+      #   GHSA-6qv9-48xg-fc7f  GHSA-c67j-w6g6-q2cm  GHSA-2g6r-c272-w58r
+      #   GHSA-926x-3r5x-gfhw  GHSA-pjwx-r37v-7724
+      # langchain-text-splitters (1 CVE):
+      #   GHSA-fv5p-p927-qmxr
+      # starlette (1 CVE):
+      #   GHSA-7f5h-v6xp-fcq8 — fix is in 0.49.1, but fastapi 0.116.1 pins
+      #   starlette < 0.49, so this needs a coordinated fastapi+starlette
+      #   upgrade. Tracked in issue #2.
+
+      - name: Audit requirements.txt
+        run: |
+          pip-audit --strict --requirement requirements.txt \
+            --ignore-vuln GHSA-6qv9-48xg-fc7f \
+            --ignore-vuln GHSA-c67j-w6g6-q2cm \
+            --ignore-vuln GHSA-2g6r-c272-w58r \
+            --ignore-vuln GHSA-926x-3r5x-gfhw \
+            --ignore-vuln GHSA-pjwx-r37v-7724 \
+            --ignore-vuln GHSA-fv5p-p927-qmxr \
+            --ignore-vuln GHSA-7f5h-v6xp-fcq8
+
+
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gitleaks needs full history to scan past commits, not just the tip.
+          fetch-depth: 0
+
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -18,16 +18,16 @@ Exposes:
 """
 
 import asyncio
-from typing import Any, Callable, Optional, Dict
+from collections.abc import Callable
 from functools import wraps
+from typing import Any
 
 from src.utils import config
 from src.utils.services.logger_config import logger
 
-
 _enabled: bool = False
 _client = None
-_observe_decorator: Optional[Callable] = None
+_observe_decorator: Callable | None = None
 
 
 def _init() -> None:
@@ -45,7 +45,8 @@ def _init() -> None:
         return
 
     try:
-        from langfuse import Langfuse, observe as _observe
+        from langfuse import Langfuse
+        from langfuse import observe as _observe
 
         _client = Langfuse(
             public_key=config.LANGFUSE_PUBLIC_KEY,
@@ -126,11 +127,11 @@ def langfuse_callback():
 
 
 def update_current_trace(
-    user_id: Optional[str] = None,
-    session_id: Optional[str] = None,
-    name: Optional[str] = None,
-    tags: Optional[list] = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    user_id: str | None = None,
+    session_id: str | None = None,
+    name: str | None = None,
+    tags: list | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """
     Attach trace-level fields (user_id, session_id, tags, metadata, name) to
@@ -141,8 +142,9 @@ def update_current_trace(
         return
     try:
         import json
-        from opentelemetry import trace
+
         from langfuse import LangfuseOtelSpanAttributes as Attr
+        from opentelemetry import trace
 
         span = trace.get_current_span()
         if span is None or not span.is_recording():
@@ -167,7 +169,7 @@ def update_current_trace(
 def update_current_observation(
     input: Any = None,
     output: Any = None,
-    metadata: Optional[Dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
 ) -> None:
     """Attach input/output/metadata to the currently-active span."""
     if not _enabled or _client is None:
@@ -183,13 +185,13 @@ def update_current_observation(
 
 
 def update_current_generation(
-    model: Optional[str] = None,
+    model: str | None = None,
     input: Any = None,
     output: Any = None,
-    metadata: Optional[Dict[str, Any]] = None,
-    usage_details: Optional[Dict[str, int]] = None,
-    cost_details: Optional[Dict[str, float]] = None,
-    model_parameters: Optional[Dict[str, Any]] = None,
+    metadata: dict[str, Any] | None = None,
+    usage_details: dict[str, int] | None = None,
+    cost_details: dict[str, float] | None = None,
+    model_parameters: dict[str, Any] | None = None,
 ) -> None:
     """
     Update the currently-active generation/embedding observation with model

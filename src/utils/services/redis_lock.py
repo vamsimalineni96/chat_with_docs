@@ -4,10 +4,8 @@ import uuid
 import redis
 
 from src.utils import config
-from src.utils.errors import RedisLockError, ConversationLockError
+from src.utils.errors import ConversationLockError, RedisLockError
 from src.utils.services.logger_config import logger
-
-
 
 
 class ConversationLock:

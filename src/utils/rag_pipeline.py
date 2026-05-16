@@ -1,29 +1,29 @@
 import time
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 from langchain_core.runnables import RunnableLambda
 
 from src.utils import config
 from src.utils.errors import InferenceError
 from src.utils.observability import observe, update_current_observation
-from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
+from src.utils.services.chunk_ranking import NVidiaReranker
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
-from src.utils.services.chunk_ranking import NVidiaReranker
+from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 
 
-def build_context(chunks: List[Dict[str, Any]]) -> str:
-    parts: List[str] = []
+def build_context(chunks: list[dict[str, Any]]) -> str:
+    parts: list[str] = []
     for i, c in enumerate(chunks, start=1):
         score = c.get("score")
-        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+        score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
         parts.append(
             f"[Chunk {i} | score={score_str} | source={c.get('source')}]\n{c['text']}\n"
         )
     return "\n\n".join(parts)
 
 
-def format_history_for_prompt(history: List[Dict], max_turns: int = config.HISTORY_MAX_TURNS) -> str:
+def format_history_for_prompt(history: list[dict], max_turns: int = config.HISTORY_MAX_TURNS) -> str:
     if not history:
         return "None"
 
@@ -49,7 +49,7 @@ def _retrieve_for_query(
     milvus_store: MilvusStoreHandler,
     query: str,
     top_k: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Hybrid (dense + BM25) retrieval for a single query string."""
     results = milvus_store.search_similar_chunks(query=query, top_k=top_k)
     update_current_observation(
@@ -77,7 +77,7 @@ def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
       rerank -> slice top_k -> assemble (context + history_text) -> chat completion
     """
 
-    def rerank(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def rerank(payload: dict[str, Any]) -> dict[str, Any]:
         retrieved = payload["retrieved"]
         reranked = reranker.execute(question=payload["question"], retrieved_chunks=retrieved)
         # Slice down to TOP_K for the LLM context.
@@ -88,7 +88,7 @@ def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
             debug["reranked_top_k"] = sliced
         return {**payload, "reranked": sliced}
 
-    def assemble(payload: Dict[str, Any]) -> Dict[str, Any]:
+    def assemble(payload: dict[str, Any]) -> dict[str, Any]:
         context = build_context(payload["reranked"])
         history_text = payload.get("history_text") or format_history_for_prompt(
             payload["history"], max_turns=config.HISTORY_MAX_TURNS
@@ -98,7 +98,7 @@ def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
             debug["history_text"] = history_text
         return {**payload, "context": context, "history_text": history_text}
 
-    def generate(payload: Dict[str, Any]) -> str:
+    def generate(payload: dict[str, Any]) -> str:
         timings = payload["_timings"]
         debug = payload.get("_debug")
         if debug is not None:
@@ -135,11 +135,11 @@ def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
 @observe(name="answer_question")
 def answer_question(
     question: str,
-    query_vec: List[float],
+    query_vec: list[float],
     collection_name: str,
-    history: List[Dict],
+    history: list[dict],
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Main RAG orchestration.
 
@@ -159,7 +159,7 @@ def answer_question(
     nim_client = NIMClient()
     nim_reranker = NVidiaReranker()
 
-    debug_info: Optional[Dict[str, Any]] = {} if debug else None
+    debug_info: dict[str, Any] | None = {} if debug else None
     history_text = format_history_for_prompt(history, max_turns=config.HISTORY_MAX_TURNS)
 
     logger.info("Retrieving context from Milvus DB (hybrid dense + BM25)")
@@ -205,8 +205,8 @@ def answer_question(
         }
 
     chain = build_generation_chain(nim_reranker, nim_client)
-    timings: Dict[str, float] = {}
-    chain_input: Dict[str, Any] = {
+    timings: dict[str, float] = {}
+    chain_input: dict[str, Any] = {
         "question": question,
         "retrieved": retrieved,
         "history": history,

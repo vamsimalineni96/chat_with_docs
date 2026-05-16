@@ -1,9 +1,9 @@
 # inspect_db.py
-from typing import Optional
 
-from src.utils.db.database import SessionLocal
+
 from src.utils.db import models
-from sqlalchemy.orm import Session
+from src.utils.db.database import SessionLocal
+
 
 class DBInspector:
     """Utility class for inspecting database contents."""
@@ -21,7 +21,7 @@ class DBInspector:
             db.close()
 
     @staticmethod
-    def print_conversations(user_external_id: Optional[str] = None):
+    def print_conversations(user_external_id: str | None = None):
         """Print conversations, optionally filtered by user external_id."""
         db = SessionLocal()
         try:

@@ -1,13 +1,13 @@
 import os
 
-from src.utils import config
-from src.utils.services.milvus_store import MilvusStoreHandler
-from src.utils.services.pdf_parser import PDFParser
-from src.utils.services.logger_config import logger
-from src.utils.errors import PDFParseError, EmbeddingError, MilvusError
-from src.utils.api.task_registry import update_task
 from fastapi import HTTPException
 
+from src.utils import config
+from src.utils.api.task_registry import update_task
+from src.utils.errors import EmbeddingError, MilvusError, PDFParseError
+from src.utils.services.logger_config import logger
+from src.utils.services.milvus_store import MilvusStoreHandler
+from src.utils.services.pdf_parser import PDFParser
 
 
 async def upload_pdf(pdf_name:str, collection_name:str, task_id):

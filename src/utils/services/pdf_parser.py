@@ -1,5 +1,6 @@
-import fitz
 import re
+
+import fitz
 
 from src.utils.errors import PDFParseError
 from src.utils.services.logger_config import logger

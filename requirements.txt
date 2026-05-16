@@ -9,7 +9,7 @@ chromadb==1.0.20
 fastapi==0.116.1
 openai==1.109.1
 pymilvus==2.6.3
-pymupdf==1.26.6
+pymupdf==1.26.4
 sqlalchemy==2.0.44
 psycopg2-binary==2.9.11
 redis==7.1.0

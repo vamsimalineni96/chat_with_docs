@@ -4,10 +4,10 @@ from enum import Enum as PyEnum
 
 from sqlalchemy import (
     Column,
-    String,
     DateTime,
     ForeignKey,
     Integer,
+    String,
     Text,
 )
 from sqlalchemy.dialects.postgresql import UUID
