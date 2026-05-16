@@ -24,8 +24,7 @@ Each locust user:
 import os
 import random
 
-from locust import HttpUser, task, between
-
+from locust import HttpUser, between, task
 
 # ---------------------------------------------------------------------------
 # Tunables (override via env if you like)

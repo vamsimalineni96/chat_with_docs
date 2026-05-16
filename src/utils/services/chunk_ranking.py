@@ -1,9 +1,9 @@
-from typing import List, Dict, Any
+from typing import Any
 
 from langchain_core.documents import Document
 from langchain_nvidia_ai_endpoints import NVIDIARerank
 
-from src.utils.config import RERANK_MODEL, NVIDIA_API_KEY
+from src.utils.config import NVIDIA_API_KEY, RERANK_MODEL
 from src.utils.errors import RerankError
 from src.utils.observability import observe, update_current_generation
 from src.utils.services.logger_config import logger
@@ -27,8 +27,8 @@ class NVidiaReranker:
 
     @observe(name="rerank", as_type="generation")
     def execute(
-        self, question: str, retrieved_chunks: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
+        self, question: str, retrieved_chunks: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
         if not question or not isinstance(question, str):
             raise RerankError("Query must be a non-empty string.")
         if not retrieved_chunks:
@@ -58,7 +58,7 @@ class NVidiaReranker:
         if not reranked_docs:
             raise RerankError("Rerank API returned an empty ranking list.")
 
-        reranked_chunks: List[Dict[str, Any]] = []
+        reranked_chunks: list[dict[str, Any]] = []
         for doc in reranked_docs:
             meta = doc.metadata or {}
             reranked_chunks.append(

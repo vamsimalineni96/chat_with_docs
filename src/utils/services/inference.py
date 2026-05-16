@@ -1,14 +1,13 @@
 import os
-import yaml
-from typing import Dict
 
-from langchain_nvidia_ai_endpoints import ChatNVIDIA
-from langchain_core.prompts import ChatPromptTemplate
+import yaml
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
 from src.root import PROJECT_ROOT
-from src.utils.errors import InferenceError
 from src.utils import config
+from src.utils.errors import InferenceError
 from src.utils.observability import langfuse_callback
 from src.utils.services.logger_config import logger
 
@@ -43,11 +42,11 @@ class NIMClient:
         self._chain = self._prompt | self.llm | StrOutputParser()
 
     @staticmethod
-    def _load_yaml_config() -> Dict:
+    def _load_yaml_config() -> dict:
         config_path = os.path.join(PROJECT_ROOT, "src", "prompts", "prompt.yaml")
         logger.info("Loading prompts from yaml file: %s", config_path)
         try:
-            with open(config_path, "r") as fh:
+            with open(config_path) as fh:
                 cfg = yaml.safe_load(fh)
         except FileNotFoundError as e:
             logger.error("Prompt YAML file not found: %s", e)

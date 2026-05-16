@@ -1,36 +1,32 @@
-from uuid import UUID
 import asyncio
-
-from fastapi import FastAPI, Depends, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from concurrent.futures import ThreadPoolExecutor
-from sqlalchemy.orm import Session
+from uuid import UUID
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
 from src.utils import config
-from src.utils.errors import (
-    InferenceError,
-    ConversationServiceError,
-    ConversationOwnershipError,
-    DatabaseError,
-    MilvusError,
-    CacheError,
-    EmbeddingError,
-    PDFParseError,
-    RedisLockError,
-)
-from src.utils.services.logger_config import logger
-from src.utils.chat.chat_service import cache_output, rag_output
-from src.utils.services.embedder import EmbeddingHandler
-from src.utils.services.pdf_parser import PDFParser
-from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
-from src.utils.services.conversation_store import get_conversation_service
-from src.utils.services.redis_lock import get_redis_lock, ConversationLockError
-from src.utils.db.database_debug import DBInspector
-from src.utils.db.database import get_db, Base, engine
-from src.utils.api.schemas import ChatRequest, ChatResponse
 from src.utils.api.background_tasks import upload_pdf
+from src.utils.api.schemas import ChatRequest, ChatResponse
 from src.utils.api.task_registry import create_task, get_status
+from src.utils.chat.chat_service import cache_output, rag_output
+from src.utils.db.database import Base, engine, get_db
+from src.utils.db.database_debug import DBInspector
+from src.utils.errors import (
+    CacheError,
+    ConversationOwnershipError,
+    ConversationServiceError,
+    EmbeddingError,
+    InferenceError,
+    MilvusError,
+)
+from src.utils.services.conversation_store import get_conversation_service
+from src.utils.services.embedder import EmbeddingHandler
+from src.utils.services.logger_config import logger
+from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
+from src.utils.services.redis_lock import ConversationLockError, get_redis_lock
 
 conversation_service = get_conversation_service()
 redis_service = get_redis_lock()

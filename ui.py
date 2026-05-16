@@ -9,7 +9,7 @@ Open multiple browser tabs to simulate concurrent users.
 """
 
 import os
-from typing import List, Dict, Any, Optional
+from typing import Any
 
 import requests
 import streamlit as st
@@ -21,7 +21,7 @@ TIMEOUT = int(os.getenv("UI_REQUEST_TIMEOUT", "120"))
 
 # --- API helpers --------------------------------------------------------------
 
-def list_conversations(user_external_id: str) -> List[Dict[str, Any]]:
+def list_conversations(user_external_id: str) -> list[dict[str, Any]]:
     r = requests.get(
         f"{API_BASE}/list_conversations",
         params={"user_external_id": user_external_id},
@@ -31,7 +31,7 @@ def list_conversations(user_external_id: str) -> List[Dict[str, Any]]:
     return r.json().get("conversations", [])
 
 
-def list_messages(user_external_id: str, conversation_id: str) -> List[Dict[str, Any]]:
+def list_messages(user_external_id: str, conversation_id: str) -> list[dict[str, Any]]:
     r = requests.get(
         f"{API_BASE}/list_messages",
         params={
@@ -48,9 +48,9 @@ def post_chat(
     user_external_id: str,
     question: str,
     collection_name: str,
-    conversation_id: Optional[str],
+    conversation_id: str | None,
     debug: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     payload = {
         "user_external_id": user_external_id,
         "question": question,
@@ -64,13 +64,13 @@ def post_chat(
     return r.json()
 
 
-def render_debug_panel(debug: Dict[str, Any]) -> None:
+def render_debug_panel(debug: dict[str, Any]) -> None:
     """Render an expander showing retrieval / rerank / prompt / timings."""
     with st.expander("🐛 Debug — retrieval, rerank, prompt, timings", expanded=False):
         timings = debug.get("timings_ms") or {}
         if timings:
             cols = st.columns(len(timings))
-            for col, (k, v) in zip(cols, timings.items()):
+            for col, (k, v) in zip(cols, timings.items(), strict=False):
                 col.metric(k, f"{v:.0f} ms")
 
         tab_retrieved, tab_hybrid, tab_reranked, tab_prompt, tab_history = st.tabs(
@@ -82,7 +82,7 @@ def render_debug_panel(debug: Dict[str, Any]) -> None:
             st.caption(f"{len(chunks)} chunks retrieved from Milvus (hybrid dense + BM25)")
             for i, c in enumerate(chunks, 1):
                 score = c.get("score")
-                score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+                score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
                 st.markdown(
                     f"**#{i}** — score `{score_str}` · source `{c.get('source')}` · "
                     f"chunk_order `{c.get('chunk_order')}`"
@@ -126,7 +126,7 @@ def render_debug_panel(debug: Dict[str, Any]) -> None:
                     in_sparse = cid in sparse_ids
                     badge = "🤝 also BM25" if in_sparse else "🔹 dense-only"
                     score = c.get("score")
-                    score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+                    score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
                     st.markdown(f"**#{i}** `{score_str}` · {badge}")
                     st.text((c.get("text") or "")[:400])
                     st.divider()
@@ -140,7 +140,7 @@ def render_debug_panel(debug: Dict[str, Any]) -> None:
                     in_dense = cid in dense_ids
                     badge = "🤝 also dense" if in_dense else "🔸 BM25-only"
                     score = c.get("score")
-                    score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "n/a"
+                    score_str = f"{score:.4f}" if isinstance(score, int | float) else "n/a"
                     st.markdown(f"**#{i}** `{score_str}` · {badge}")
                     st.text((c.get("text") or "")[:400])
                     st.divider()
@@ -166,8 +166,8 @@ def render_debug_panel(debug: Dict[str, Any]) -> None:
             for i, c in enumerate(top_k, 1):
                 rscore = c.get("rerank_score")
                 ms = c.get("score")
-                rscore_str = f"{rscore:.4f}" if isinstance(rscore, (int, float)) else "n/a"
-                ms_str = f"{ms:.4f}" if isinstance(ms, (int, float)) else "n/a"
+                rscore_str = f"{rscore:.4f}" if isinstance(rscore, int | float) else "n/a"
+                ms_str = f"{ms:.4f}" if isinstance(ms, int | float) else "n/a"
                 st.markdown(
                     f"**#{i}** — rerank `{rscore_str}` · milvus `{ms_str}` · "
                     f"source `{c.get('source')}`"
@@ -307,7 +307,7 @@ if prompt:
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        debug_payload: Optional[Dict[str, Any]] = None
+        debug_payload: dict[str, Any] | None = None
         with st.spinner("Thinking…"):
             try:
                 resp = post_chat(

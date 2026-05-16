@@ -3,10 +3,10 @@ import time
 from src.utils import config
 from src.utils.errors import CacheError, ConversationServiceError, InferenceError
 from src.utils.observability import observe, update_current_trace
+from src.utils.rag_pipeline import answer_question
+from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import get_cache_store
-from src.utils.services.conversation_store import get_conversation_service
-from src.utils.rag_pipeline import answer_question
 
 cache_service = get_cache_store()
 converstion_service = get_conversation_service()

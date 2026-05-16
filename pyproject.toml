@@ -1,0 +1,28 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+extend-exclude = [
+    "etcd_data",
+    "milvus_data",
+    "minio_data",
+    "clickhouse_config",
+    "pdfs",
+    "src/logs",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "I",   # isort
+    "W",   # pycodestyle warnings
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear (likely bugs)
+]
+ignore = [
+    "E501",  # line-too-long handled by formatter; don't fail CI on it
+    "B008",  # FastAPI uses Depends() in defaults — idiomatic, not a bug
+    # B904 (raise X from err) is best practice but not autofixable.
+    # Tracked for a separate cleanup PR — see https://docs.astral.sh/ruff/rules/raise-without-from-inside-except/
+    "B904",
+]
