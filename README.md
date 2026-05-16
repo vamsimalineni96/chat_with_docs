@@ -1,5 +1,8 @@
 # BTX-BPD-Bodycam-Search
 
+[![CI](https://github.com/vamsimalineni96/chat_with_docs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vamsimalineni96/chat_with_docs/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/python-3.12-blue)
+
 RAG over a document corpus, built as the search/summarization backbone. The current `pdfs/` corpus is a placeholder (Harry Potter books 4 and 7) used to validate the pipeline end-to-end; swap in the real documents to point the system at bodycam transcripts.
 
 ## Stack
