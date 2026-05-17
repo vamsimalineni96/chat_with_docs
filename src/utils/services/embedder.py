@@ -6,11 +6,7 @@ from src.utils.config import EMBED_MODEL, NVIDIA_API_KEY
 from src.utils.errors import EmbeddingError
 from src.utils.observability import observe, update_current_generation
 from src.utils.services.logger_config import logger
-
-
-def _estimate_tokens(text: str) -> int:
-    """Rough char-based token estimate. NVIDIA doesn't return usage on embed."""
-    return max(1, len(text) // 4)
+from src.utils.services.tokenizers import count_tokens
 
 
 class EmbeddingHandler:
@@ -42,7 +38,7 @@ class EmbeddingHandler:
                 vector = self.embeddings.embed_query(text)
             logger.info("Successfully retrieved embedding of length %d", len(vector))
 
-            tokens = _estimate_tokens(text)
+            tokens = count_tokens(text)
             update_current_generation(
                 model=EMBED_MODEL,
                 input=text,
@@ -78,7 +74,7 @@ class EmbeddingHandler:
             logger.exception("Failed batch document embedding: %s", e)
             raise EmbeddingError("Failed to embed document chunks.") from e
 
-        total_tokens = sum(_estimate_tokens(c) for c in text_chunks)
+        total_tokens = sum(count_tokens(c) for c in text_chunks)
         update_current_generation(
             model=EMBED_MODEL,
             input={
