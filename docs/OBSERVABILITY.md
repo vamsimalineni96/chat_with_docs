@@ -47,9 +47,11 @@ This section is a deliberate audit, not a sales pitch. Each row is grounded in a
 
 | Capability | Status | Evidence |
 |---|---|---|
-| Trace propagation (one trace ID through every stage) | **Implemented** via Langfuse + OpenTelemetry. Top-level FastAPI route delegates to `@observe`-decorated services; child spans inherit. | [src/utils/observability.py](../src/utils/observability.py) — Langfuse 3.x SDK wired, `update_current_trace` attaches `user_id`/`session_id`/tags/metadata. |
+| Trace propagation (one trace ID through every stage) | **Implemented** via Langfuse v4.x + OpenTelemetry. Top-level FastAPI route delegates to `@observe`-decorated services; child spans inherit. v4 keeps the v3 OTel-attribute surface we depend on (`LangfuseOtelSpanAttributes`) alongside its newer `propagate_attributes()` idiom; we deliberately kept the OTel-direct path — see §3.1 note below. | [src/utils/observability.py](../src/utils/observability.py) — `update_current_trace` attaches `user_id`/`session_id`/tags/metadata via OTel; metadata is coerced to `dict[str, str]` for v4 validation. |
 | Structured logging | **Partial.** A single structured `RAG_PIPELINE_METRICS \| k=v \| k=v` log line is emitted per request. Most other `logger.info(...)` calls are free text. | [src/utils/chat/chat_service.py:161–171](../src/utils/chat/chat_service.py) — the one structured line. Everything else uses `%s`-formatted prose. |
 | Per-request task-type tagging | **Implemented** via Langfuse trace tags: `prompt:v2`, `collection:X`, `domain:Y`, `cache-path`/`rag-path`, `normal`/`debug`. | [src/utils/chat/chat_service.py:26–34](../src/utils/chat/chat_service.py), [src/utils/chat/chat_service.py:79–87](../src/utils/chat/chat_service.py). |
+
+> **Note on v3 → v4 SDK migration.** PR #18 bumped `langfuse>=3.0.0` → `langfuse>=4.6.1,<5`. The minimum-viable changes were: (a) `should_export_span=lambda _s: True` on client init to preserve v3 export defaults, (b) proactive `dict[str, str]` coercion of metadata (v4 validates and drops oversized/non-string values). `update_current_trace` continues to set OTel attributes directly because `LangfuseOtelSpanAttributes` remains supported on v4. Migrating to v4's `propagate_attributes()` context-manager idiom would be churn without functional gain right now and is tracked as optional follow-up work.
 
 ### 3.2 Cost (token economics)
 

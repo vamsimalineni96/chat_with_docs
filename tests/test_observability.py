@@ -10,10 +10,10 @@ smoke test (does a trace actually appear in the Langfuse UI?) — that step
 stays manual and is run pre-merge for any change that touches `observability.py`
 or its callers.
 
-The `test_update_current_trace_sets_expected_otel_attributes_v3` test is
-specifically pinned to v3 SDK behavior; the langfuse 3.x -> 4.x migration
-PR will rewrite it to assert `propagate_attributes(...)` is called instead.
-The diff between the two versions of this test will document what changed.
+The OTel-attribute test pins the v3-style approach that we deliberately
+kept on v4 (see observability.py docstring and docs/OBSERVABILITY.md §3.1).
+If we later migrate to v4's `propagate_attributes()` idiom, that test will
+need to be rewritten to assert the new call shape.
 """
 
 import asyncio
@@ -143,13 +143,10 @@ def test_flush_calls_client_flush_when_client_present(monkeypatch):
     mock_client.flush.assert_called_once()
 
 
-def test_update_current_trace_sets_expected_otel_attributes_v3(monkeypatch):
-    """Pins the v3 SDK behavior: each non-None kwarg becomes one OTel
-    `span.set_attribute(...)` call.
-
-    NOTE: After the langfuse 3.x -> 4.x migration, this test should assert
-    `propagate_attributes(...)` is called instead. Updating this test is
-    the central change of that PR.
+def test_update_current_trace_sets_expected_otel_attributes(monkeypatch):
+    """Pins our chosen approach for trace-level attributes: each non-None
+    kwarg becomes one OTel `span.set_attribute(...)` call. This works on
+    both v3 and v4 — `LangfuseOtelSpanAttributes` is present in both.
     """
     monkeypatch.setattr(obs, "_enabled", True)
 
@@ -170,3 +167,39 @@ def test_update_current_trace_sets_expected_otel_attributes_v3(monkeypatch):
 
     # All five kwargs supplied -> five OTel attribute writes.
     assert mock_span.set_attribute.call_count == 5
+
+
+def test_update_current_observation_coerces_metadata_to_strings(monkeypatch):
+    """v4 validates metadata as `dict[str, str]` and drops oversized or
+    non-string values with a warning. The wrapper coerces proactively so
+    callers can pass natural Python types (bools, ints) without warnings."""
+    mock_client = MagicMock()
+    monkeypatch.setattr(obs, "_enabled", True)
+    monkeypatch.setattr(obs, "_client", mock_client)
+
+    obs.update_current_observation(
+        metadata={"cache_enabled": True, "retry_count": 3, "note": "x" * 500},
+    )
+
+    kwargs = mock_client.update_current_span.call_args.kwargs
+    md = kwargs["metadata"]
+    assert md == {
+        "cache_enabled": "True",
+        "retry_count": "3",
+        "note": "x" * 200,  # truncated to ≤200 chars
+    }
+
+
+def test_update_current_generation_coerces_metadata_to_strings(monkeypatch):
+    mock_client = MagicMock()
+    monkeypatch.setattr(obs, "_enabled", True)
+    monkeypatch.setattr(obs, "_client", mock_client)
+
+    obs.update_current_generation(
+        model="nv-embed",
+        metadata={"chunk_size": 800, "input_type": "passage"},
+        usage_details={"input": 100, "total": 100},
+    )
+
+    kwargs = mock_client.update_current_generation.call_args.kwargs
+    assert kwargs["metadata"] == {"chunk_size": "800", "input_type": "passage"}

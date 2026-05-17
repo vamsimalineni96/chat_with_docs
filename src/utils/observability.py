@@ -1,11 +1,20 @@
 """
 Langfuse observability — central wiring.
 
-Targets Langfuse Python SDK v3.x (OpenTelemetry-based). The 3.x API:
-  - `@observe` is a top-level import: `from langfuse import observe`
-  - `CallbackHandler` lives in `langfuse.langchain`
-  - Trace/span updaters live on the singleton client: `Langfuse.update_current_trace`
-    and `Langfuse.update_current_span`
+Targets Langfuse Python SDK v4.x (OpenTelemetry-based). v4 keeps the v3 surface
+we depend on (`LangfuseOtelSpanAttributes` + `Langfuse.update_current_span/_generation`)
+alongside the newer `propagate_attributes()` context-manager idiom. We
+deliberately keep the OTel-direct approach for `update_current_trace`: it works
+on v4, has unit-test coverage, and a refactor to `propagate_attributes` would
+require restructuring every caller into a `with` block for no functional gain.
+The idiomatic-modernization is tracked as a follow-up (see docs/OBSERVABILITY.md §3.1).
+
+What changed for v4:
+  - `should_export_span=lambda _span: True` is passed to the Langfuse client.
+    v4's default would drop non-Langfuse spans; this restores v3 behavior.
+  - `metadata` passed to `update_current_observation` / `update_current_generation`
+    is coerced to `dict[str, str]` with values ≤200 chars. v4 validates these
+    and drops oversized/non-string values with a warning; we coerce proactively.
 
 Exposes:
   - `observe`: decorator. No-ops when Langfuse is disabled or import fails.
@@ -14,6 +23,8 @@ Exposes:
     trace; no-op when disabled.
   - `update_current_observation(...)`: attach input/output/metadata to the active
     span; no-op when disabled.
+  - `update_current_generation(...)`: attach model/usage/cost to the active
+    generation observation; no-op when disabled.
   - `flush()`: force-flush. Safe to call when disabled.
 """
 
@@ -54,6 +65,11 @@ def _init() -> None:
             host=config.LANGFUSE_HOST,
             flush_at=config.LANGFUSE_FLUSH_AT,
             flush_interval=config.LANGFUSE_FLUSH_INTERVAL,
+            # v4 would otherwise drop spans that aren't created by Langfuse
+            # or don't carry `gen_ai.*` attributes. Restore v3's
+            # export-everything behavior so our `@observe`-decorated spans
+            # and any incidental OTel spans all reach Langfuse.
+            should_export_span=lambda _span: True,
         )
         _observe_decorator = _observe
         _enabled = True
@@ -166,6 +182,18 @@ def update_current_trace(
         logger.debug("Langfuse update_current_trace failed (non-fatal): %s", e)
 
 
+def _coerce_metadata(m: dict[str, Any] | None) -> dict[str, str] | None:
+    """Coerce metadata to `dict[str, str]` with values truncated to ≤200 chars.
+
+    Langfuse v4 validates metadata as `dict[str, str]` and drops oversized
+    values with a warning; coercing here keeps the warning off our logs and
+    makes the truncation explicit.
+    """
+    if not m:
+        return None
+    return {str(k): str(v)[:200] for k, v in m.items()}
+
+
 def update_current_observation(
     input: Any = None,
     output: Any = None,
@@ -178,7 +206,7 @@ def update_current_observation(
         _client.update_current_span(
             input=input,
             output=output,
-            metadata=metadata,
+            metadata=_coerce_metadata(metadata),
         )
     except Exception as e:
         logger.debug("Langfuse update_current_span failed (non-fatal): %s", e)
@@ -207,7 +235,7 @@ def update_current_generation(
             model=model,
             input=input,
             output=output,
-            metadata=metadata,
+            metadata=_coerce_metadata(metadata),
             usage_details=usage_details,
             cost_details=cost_details,
             model_parameters=model_parameters,
