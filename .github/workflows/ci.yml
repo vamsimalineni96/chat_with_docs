@@ -98,11 +98,11 @@ jobs:
           cache: pip
 
       # Install only what the tests need. tests/ targets pure-function helpers
-      # (e.g. tokenizers) that don't import langchain/milvus/etc., so we skip
-      # the heavy runtime install. If a test ever needs more, install
+      # (tokenizers, observability) that don't import langchain/milvus/etc., so
+      # we skip the heavy runtime install. If a test ever needs more, install
       # requirements.txt here instead.
       - name: Install test deps
-        run: pip install -r requirements-dev.txt tiktoken==0.7.0
+        run: pip install -r requirements-dev.txt tiktoken==0.7.0 'langfuse>=3.0.0,<4'
 
       - name: Run pytest
         run: pytest tests/ -v
