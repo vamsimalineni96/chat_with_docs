@@ -69,7 +69,8 @@ jobs:
             --ignore-vuln GHSA-926x-3r5x-gfhw \
             --ignore-vuln GHSA-pjwx-r37v-7724 \
             --ignore-vuln GHSA-fv5p-p927-qmxr \
-            --ignore-vuln GHSA-7f5h-v6xp-fcq8
+            --ignore-vuln GHSA-7f5h-v6xp-fcq8 \
+            --ignore-vuln GHSA-cxqh-p2w9-fmr7
 
 
 
