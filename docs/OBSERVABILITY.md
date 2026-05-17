@@ -56,7 +56,7 @@ This section is a deliberate audit, not a sales pitch. Each row is grounded in a
 | Capability | Status | Evidence |
 |---|---|---|
 | Token counts captured at the LLM stage | **Implemented.** The LangChain `CallbackHandler` is passed to the chat-completion chain; NVIDIA endpoints return usage; Langfuse records it. | [src/utils/services/inference.py:65–75](../src/utils/services/inference.py). |
-| Token counts captured at the embedding stage | **Partial — estimated.** A `len(text) // 4` heuristic feeds `update_current_generation` with a token estimate. Not real tokens. | [src/utils/services/embedder.py:11–13, 45–52, 81–98](../src/utils/services/embedder.py). |
+| Token counts captured at the embedding stage | **Implemented (tiktoken proxy).** `count_tokens` uses tiktoken's `cl100k_base` encoding — a deliberate proxy for NVIDIA's actual tokenizer. Typically within ~10%, sufficient for cost trending. Closed by PR #3. | [src/utils/services/tokenizers.py](../src/utils/services/tokenizers.py), [src/utils/services/embedder.py](../src/utils/services/embedder.py). |
 | Reranker cost signal | **Captured as passage count**, not tokens. NVIDIA's rerank endpoint doesn't return token usage, so we log `input_count`/`output_count`. | [src/utils/services/chunk_ranking.py:73–82](../src/utils/services/chunk_ranking.py). |
 | Cost-per-successful-task metric | **Missing.** Token counts per span exist; no aggregation, no $-conversion, no per-task-type rollup. | — |
 | Cache hit-rate trending | **Missing aggregation.** `cache-path` vs `rag-path` tags are per-trace; no rolling dashboard, no alert if hit rate falls below threshold. | — |
