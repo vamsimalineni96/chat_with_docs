@@ -1,4 +1,4 @@
-# BTX-BPD-Bodycam-Search
+# Chat-with-docs!
 
 [![CI](https://github.com/vamsimalineni96/chat_with_docs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vamsimalineni96/chat_with_docs/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
