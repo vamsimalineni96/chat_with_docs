@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -281,12 +282,30 @@ def fetch_from_langfuse(days: int) -> tuple[list[dict[str, Any]], list[dict[str,
     # Langfuse installed (e.g. CI runs against the fixture only).
     from langfuse import Langfuse  # type: ignore
 
-    from src.utils import config
+    # Read creds from env directly rather than importing src.utils.config —
+    # config.py requires NVIDIA_API_KEY at import time, which CI environments
+    # running only this script don't (and shouldn't) have. Locally, the .env
+    # file is picked up by load_dotenv below.
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+
+    public_key = os.environ.get("LANGFUSE_PUBLIC_KEY")
+    secret_key = os.environ.get("LANGFUSE_SECRET_KEY")
+    if not public_key or not secret_key:
+        raise RuntimeError(
+            "Missing LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY. "
+            "Set them in your environment or .env."
+        )
+    host = os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com")
 
     client = Langfuse(
-        public_key=config.LANGFUSE_PUBLIC_KEY,
-        secret_key=config.LANGFUSE_SECRET_KEY,
-        host=config.LANGFUSE_HOST,
+        public_key=public_key,
+        secret_key=secret_key,
+        host=host,
     )
 
     from_ts = datetime.now(UTC) - timedelta(days=days)

@@ -1,0 +1,56 @@
+name: Cost report (nightly)
+
+# Generates a real cost report from Langfuse Cloud once a day and commits
+# it to `docs/reports/cost_<YYYY-MM-DD>.md`. Also runnable on demand for
+# debugging. Uses `[skip ci]` on the bot commit to avoid recursive runs of
+# the main CI workflow.
+on:
+  schedule:
+    - cron: "0 6 * * *"  # 06:00 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write  # bot needs to push the auto-generated report
+
+jobs:
+  generate-and-commit:
+    name: Generate + commit nightly cost report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Minimal install — the script's live path needs only Langfuse +
+      # python-dotenv. None of the heavy runtime stack (langchain/milvus/
+      # fastapi) is required because we don't import src.utils.config here.
+      - name: Install deps
+        run: pip install "langfuse>=4.6.1,<5" python-dotenv==1.0.1
+
+      - name: Generate cost report
+        env:
+          LANGFUSE_HOST: ${{ secrets.LANGFUSE_HOST }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          python -m scripts.cost_report \
+            --source live \
+            --days 7 \
+            --output "docs/reports/cost_${DATE}.md"
+
+      - name: Commit if changed
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "docs/reports/cost_${DATE}.md"
+          if git diff --staged --quiet; then
+            echo "No new content to commit — exiting clean."
+            exit 0
+          fi
+          git commit -m "chore(reports): nightly cost report ${DATE} [skip ci]"
+          git push
