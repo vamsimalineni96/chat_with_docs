@@ -1,0 +1,85 @@
+{
+  "_comment": "Synthetic eval rows used by tests/test_eval_reporter.py and to generate docs/eval-reports/eval_sample.md. Five rows — mix of strong and weak — chosen to exercise the aggregate, by-book, by-category, and failures sections.",
+  "rows": [
+    {
+      "id": "hp4-001",
+      "question": "Who is Cedric Diggory and what happens to him by the end of the Goblet of Fire?",
+      "answer": "Cedric Diggory is a Hufflepuff student selected as the Hogwarts champion in the Triwizard Tournament. He is killed by Peter Pettigrew at Voldemort's command in the graveyard at the end of the third task.",
+      "book": "hp4",
+      "category": "character",
+      "recall_at_5": 1.0,
+      "reciprocal_rank": 1.0,
+      "judge": {
+        "groundedness": 5,
+        "accuracy": 5,
+        "completeness": 4,
+        "reasoning": "Well-grounded and accurate; light on the Priori Incantatem detail."
+      },
+      "latency_ms": 1200
+    },
+    {
+      "id": "hp4-003",
+      "question": "What is the Goblet of Fire?",
+      "answer": "The Goblet of Fire is a magical chalice that selects champions for the Triwizard Tournament by emitting their names on a piece of parchment after they are placed inside it.",
+      "book": "hp4",
+      "category": "magic",
+      "recall_at_5": 1.0,
+      "reciprocal_rank": 0.5,
+      "judge": {
+        "groundedness": 5,
+        "accuracy": 5,
+        "completeness": 5,
+        "reasoning": "Complete and grounded."
+      },
+      "latency_ms": 950
+    },
+    {
+      "id": "hp7-001",
+      "question": "What is a Horcrux?",
+      "answer": "A Horcrux is a magical object that contains a fragment of a wizard's soul, created via dark magic involving murder. Voldemort split his soul into seven Horcruxes to attain immortality.",
+      "book": "hp7",
+      "category": "magic",
+      "recall_at_5": 0.8,
+      "reciprocal_rank": 1.0,
+      "judge": {
+        "groundedness": 5,
+        "accuracy": 4,
+        "completeness": 5,
+        "reasoning": "Definition is correct; the count of seven is treated as planned (six plus Voldemort himself) in the source."
+      },
+      "latency_ms": 1450
+    },
+    {
+      "id": "hp7-002",
+      "question": "What is the Battle of the Seven Potters?",
+      "answer": "I don't have enough context to answer this question accurately. The retrieved passages focused on Polyjuice Potion usage in a different scene.",
+      "book": "hp7",
+      "category": "plot",
+      "recall_at_5": 0.2,
+      "reciprocal_rank": 0.0,
+      "judge": {
+        "groundedness": 4,
+        "accuracy": 3,
+        "completeness": 2,
+        "reasoning": "Honest refusal but caused by weak retrieval — the right chunks were not surfaced."
+      },
+      "latency_ms": 1100
+    },
+    {
+      "id": "hp7-004",
+      "question": "How does Dobby die in the Deathly Hallows?",
+      "answer": "Dobby is killed by Bellatrix Lestrange when she throws a silver knife as he Disapparates the group away from Malfoy Manor. He dies shortly afterwards at Shell Cottage in Harry's arms.",
+      "book": "hp7",
+      "category": "character",
+      "recall_at_5": 1.0,
+      "reciprocal_rank": 1.0,
+      "judge": {
+        "groundedness": 5,
+        "accuracy": 5,
+        "completeness": 5,
+        "reasoning": "Complete, accurate, fully grounded."
+      },
+      "latency_ms": 1050
+    }
+  ]
+}
