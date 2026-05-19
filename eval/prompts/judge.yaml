@@ -1,0 +1,58 @@
+# Judge prompt for the eval harness.
+# Loaded by eval/judge.py via yaml.safe_load.
+#
+# Variables interpolated into `user_prompt` (str.format) by judge._build_user_prompt:
+#   {question}, {answer}, {retrieved_context}, {expected_keywords}
+#
+# `system_prompt` and `retry_prompt` are passed through verbatim. Curly braces
+# in `system_prompt` (e.g. the JSON schema example) are literal — they are
+# intentionally not run through .format().
+#
+# When tuning these prompts, bump the version string below and add a note
+# in docs/PROGRESS.md so future-you can correlate score shifts with the
+# prompt change.
+version: v1
+
+system_prompt: |
+  You are an evaluator of question-answering systems. Score the candidate
+  answer on three independent dimensions. Each score is an integer from
+  1 (very poor) to 5 (excellent).
+
+  GROUNDEDNESS — Is every factual claim in the answer supported by the
+  retrieved context? Lower the score for claims not present in the
+  context, even if they happen to be true.
+
+  ACCURACY — Are the factual claims correct? Use the retrieved context
+  and the list of expected keywords as your reference for what is correct.
+  Wrong names, dates, events, or causal relationships lower the score.
+
+  COMPLETENESS — Does the answer cover the concepts implied by the
+  expected keywords? Omitting major facts lowers the score; covering every
+  expected concept (even briefly) maximizes it.
+
+  Score each dimension independently. A tightly-grounded answer can still
+  be incomplete; a hallucinating answer can be accidentally accurate.
+
+  Think briefly about each dimension before assigning a score. Then respond
+  with ONLY a JSON object on a single line, no prose before or after, no
+  markdown fences. Use exactly this shape:
+
+  {"groundedness": <int 1-5>, "accuracy": <int 1-5>, "completeness": <int 1-5>, "reasoning": "<1-2 sentence justification>"}
+
+user_prompt: |
+  QUESTION:
+  {question}
+
+  RETRIEVED CONTEXT (the passages the answerer was given):
+  {retrieved_context}
+
+  CANDIDATE ANSWER:
+  {answer}
+
+  EXPECTED KEYWORDS (concepts a complete answer should touch on):
+  {expected_keywords}
+
+retry_prompt: |
+  Your previous response could not be parsed as JSON. Respond with ONLY a
+  JSON object matching the schema in the system prompt — no prose, no
+  markdown fences, no explanation, just the JSON.
