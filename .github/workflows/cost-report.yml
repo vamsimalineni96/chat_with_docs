@@ -1,0 +1,44 @@
+name: Cost report (fixture)
+
+# Runs only on demand. Regenerates docs/reports/cost_sample.md from the
+# committed fixture so the script's end-to-end behavior is verified in CI
+# without needing access to the user's self-hosted Langfuse instance.
+on:
+  workflow_dispatch:
+
+jobs:
+  generate:
+    name: Generate cost_sample.md from fixture
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # No runtime deps required — the file-mode path is pure-Python.
+      - name: Run report
+        run: |
+          python -m scripts.cost_report \
+            --source file \
+            --input tests/fixtures/observations.json \
+            --output docs/reports/cost_sample.md
+
+      - name: Upload as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cost_sample
+          path: docs/reports/cost_sample.md
+          retention-days: 30
+
+      # Surfaces the rendered table directly on the workflow run page so a
+      # reviewer doesn't have to download the artifact to read it.
+      - name: Echo to summary
+        run: |
+          {
+            echo "## Cost report (fixture)"
+            echo ""
+            cat docs/reports/cost_sample.md
+          } >> "$GITHUB_STEP_SUMMARY"
