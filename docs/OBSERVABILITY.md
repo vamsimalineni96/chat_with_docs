@@ -71,7 +71,7 @@ This section is a deliberate audit, not a sales pitch. Each row is grounded in a
 | Capability | Status | Evidence |
 |---|---|---|
 | Full inference-time capture (question, retrieved chunks with scores, history, rendered prompt, final answer) | **Implemented** via `debug=true` path on `/chat` and via Langfuse spans on every request. | [src/utils/rag_pipeline.py:55–69, 101–117, 176–193](../src/utils/rag_pipeline.py). |
-| LLM-as-judge eval (decomposed dimensions, calibrated, sampled async) | **Missing.** | — |
+| LLM-as-judge eval (decomposed dimensions, calibrated, sampled async) | **In-progress.** Scaffold landed in PR #7a: [eval/qa_set.jsonl](../eval/qa_set.jsonl) (18 HP4/HP7 Q&A pairs), [eval/metrics.py](../eval/metrics.py) (recall@k, MRR, latency percentiles), [eval/run_eval.py](../eval/run_eval.py) (validate-only stub). Judge, reporter, full orchestration, and CI workflow follow in #7b–d. | [eval/](../eval/) |
 | Heuristic checks (synchronous, deterministic) — refusal detection, citation validation, length bounds, format validation | **Missing.** | — |
 | Regression dataset (failures captured from production, used as a CI gate) | **Missing.** | — |
 | Weekly human review process (50–100 sampled responses) | **Missing.** Out of scope for a single-engineer project but worth flagging. | — |

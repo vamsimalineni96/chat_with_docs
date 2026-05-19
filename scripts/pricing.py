@@ -22,6 +22,17 @@ MODEL_PRICES: dict[str, dict[str, float]] = {
         "input_per_1k_usd": 0.00020,
         "output_per_1k_usd": 0.00020,
     },
+    "meta/llama-3.3-70b-instruct": {
+        "input_per_1k_usd": 0.00060,
+        "output_per_1k_usd": 0.00060,
+    },
+    "google/gemma-4-31b-it": {
+        # Placeholder — Gemma pricing on NVIDIA NIM not published. Approximated
+        # against similarly-sized Llama variants. Replace when contract rates
+        # are available.
+        "input_per_1k_usd": 0.00020,
+        "output_per_1k_usd": 0.00020,
+    },
     # Embeddings
     "nvidia/llama-3.2-nv-embedqa-1b-v2": {
         "input_per_1k_usd": 0.00010,
