@@ -1,0 +1,120 @@
+{
+  "_comment": "Synthetic Langfuse-shaped span data used by tests/test_cost_report.py and to generate docs/reports/cost_sample.md. Five traces — 2 cache hits, 3 full RAG — chosen to exercise each task type and stage at least once.",
+  "traces": [
+    {
+      "id": "trace-cache-1",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "cache-path", "normal"],
+      "timestamp": "2026-05-17T10:00:00Z"
+    },
+    {
+      "id": "trace-cache-2",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "cache-path", "normal"],
+      "timestamp": "2026-05-17T10:01:00Z"
+    },
+    {
+      "id": "trace-rag-1",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "rag-path", "normal"],
+      "timestamp": "2026-05-17T10:02:00Z"
+    },
+    {
+      "id": "trace-rag-2",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "rag-path", "normal"],
+      "timestamp": "2026-05-17T10:03:00Z"
+    },
+    {
+      "id": "trace-rag-3",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "rag-path", "debug"],
+      "timestamp": "2026-05-17T10:04:00Z"
+    }
+  ],
+  "observations": [
+    {
+      "id": "o-cache-1-embed",
+      "trace_id": "trace-cache-1",
+      "name": "embed_query",
+      "type": "generation",
+      "model": "nvidia/llama-3.2-nv-embedqa-1b-v2",
+      "usage_details": {"input": 12, "output": 0, "total": 12}
+    },
+    {
+      "id": "o-cache-2-embed",
+      "trace_id": "trace-cache-2",
+      "name": "embed_query",
+      "type": "generation",
+      "model": "nvidia/llama-3.2-nv-embedqa-1b-v2",
+      "usage_details": {"input": 18, "output": 0, "total": 18}
+    },
+    {
+      "id": "o-rag-1-embed",
+      "trace_id": "trace-rag-1",
+      "name": "embed_query",
+      "type": "generation",
+      "model": "nvidia/llama-3.2-nv-embedqa-1b-v2",
+      "usage_details": {"input": 15, "output": 0, "total": 15}
+    },
+    {
+      "id": "o-rag-1-rerank",
+      "trace_id": "trace-rag-1",
+      "name": "rerank",
+      "type": "generation",
+      "model": "nvidia/nv-rerankqa-mistral-4b-v3",
+      "usage_details": {"input": 25, "output": 25, "total": 50}
+    },
+    {
+      "id": "o-rag-1-llm",
+      "trace_id": "trace-rag-1",
+      "name": "ChatNVIDIA",
+      "type": "generation",
+      "model": "meta/llama-3.1-70b-instruct",
+      "usage_details": {"input": 850, "output": 320, "total": 1170}
+    },
+    {
+      "id": "o-rag-2-embed",
+      "trace_id": "trace-rag-2",
+      "name": "embed_query",
+      "type": "generation",
+      "model": "nvidia/llama-3.2-nv-embedqa-1b-v2",
+      "usage_details": {"input": 22, "output": 0, "total": 22}
+    },
+    {
+      "id": "o-rag-2-rerank",
+      "trace_id": "trace-rag-2",
+      "name": "rerank",
+      "type": "generation",
+      "model": "nvidia/nv-rerankqa-mistral-4b-v3",
+      "usage_details": {"input": 25, "output": 25, "total": 50}
+    },
+    {
+      "id": "o-rag-2-llm",
+      "trace_id": "trace-rag-2",
+      "name": "ChatNVIDIA",
+      "type": "generation",
+      "model": "meta/llama-3.1-70b-instruct",
+      "usage_details": {"input": 920, "output": 410, "total": 1330}
+    },
+    {
+      "id": "o-rag-3-embed",
+      "trace_id": "trace-rag-3",
+      "name": "embed_query",
+      "type": "generation",
+      "model": "nvidia/llama-3.2-nv-embedqa-1b-v2",
+      "usage_details": {"input": 30, "output": 0, "total": 30}
+    },
+    {
+      "id": "o-rag-3-rerank",
+      "trace_id": "trace-rag-3",
+      "name": "rerank",
+      "type": "generation",
+      "model": "nvidia/nv-rerankqa-mistral-4b-v3",
+      "usage_details": {"input": 25, "output": 25, "total": 50}
+    },
+    {
+      "id": "o-rag-3-llm",
+      "trace_id": "trace-rag-3",
+      "name": "ChatNVIDIA",
+      "type": "generation",
+      "model": "meta/llama-3.1-70b-instruct",
+      "usage_details": {"input": 1100, "output": 520, "total": 1620}
+    }
+  ]
+}
