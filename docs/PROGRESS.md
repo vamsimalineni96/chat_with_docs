@@ -9,7 +9,7 @@ The roadmap of work lives in [OBSERVABILITY.md §4](OBSERVABILITY.md). This file
 | Pillar | Status |
 |---|---|
 | **Cost** | ✅ Complete — tokenizer, aggregator, nightly automation all merged. First real report on main: [`docs/reports/cost_2026-05-19.md`](reports/cost_2026-05-19.md). |
-| **Quality** | ⬜ Not started — PR #6 (eval harness) is next. |
+| **Quality** | 🟡 Harness complete + first baseline captured. First report: [`docs/eval-reports/eval_2026-05-20.md`](eval-reports/eval_2026-05-20.md). Baseline surfaced an HP7 ingestion gap (recall@5 hp4=0.83 vs hp7=0.17) — fix tracked separately. |
 | **Latency & reliability** | ⬜ Not started. |
 | **Capstone (dashboards, README rewrite)** | ⬜ Not started. |
 
