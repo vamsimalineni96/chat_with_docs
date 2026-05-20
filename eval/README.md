@@ -8,9 +8,12 @@ The Quality pillar of the observability framework (see [OBSERVABILITY.md §3.3](
 |---|---|
 | [`qa_set.jsonl`](qa_set.jsonl) | ✅ 18 Q&A pairs over HP4 + HP7. Edit / extend freely — the file is the eval contract. |
 | [`metrics.py`](metrics.py) | ✅ Pure functions: `keyword_recall_at_k`, `reciprocal_rank`, `mrr`, `latency_percentiles`. No LLM, no I/O. |
-| [`run_eval.py`](run_eval.py) | 🟡 *Stub.* Currently only loads and validates `qa_set.jsonl`. Sub-PR #7c wires up the full pipeline. |
-| [`judge.py`](judge.py) | ⬜ Empty stub. Sub-PR #7b: LLM-as-judge with decomposed rubric (groundedness / accuracy / completeness). |
-| [`reporter.py`](reporter.py) | ⬜ Empty stub. Sub-PR #7b: markdown report renderer. |
+| [`judge.py`](judge.py) | ✅ LLM-as-judge (Llama 3.3 70B) with decomposed rubric (groundedness / accuracy / completeness). Prompts loaded from [`prompts/judge.yaml`](prompts/judge.yaml). |
+| [`reporter.py`](reporter.py) | ✅ Markdown renderer — aggregate + by-book + by-category + per-question + failures sections. |
+| [`run_eval.py`](run_eval.py) | ✅ End-to-end orchestrator. Two modes: `--validate-only` (dataset sanity check) and full-run (hits `/chat`, runs judge, writes report). |
+| [`prompts/judge.yaml`](prompts/judge.yaml) | ✅ Versioned judge prompts. Tune the rubric here — no code change required. |
+
+The CI workflow that runs this on a schedule lands in **sub-PR #7d**.
 
 ## Q&A dataset shape
 
@@ -34,33 +37,35 @@ Two keyword sets, used differently:
 
 `book` is for stratification in reports (hp4 vs hp7 quality, for instance). `category` is for diagnostic slicing (does the system struggle more with `reasoning` than `factual`?). Current categories: `character`, `plot`, `magic`, `factual`, `reasoning`.
 
-## Running today
+## Running
+
+### Validate the dataset only (no LLM, no network)
 
 ```bash
 python -m eval.run_eval --validate-only
 ```
 
-Expected output:
+### Full end-to-end run
 
-```
-Total Q&A pairs: 18
+Prerequisites:
+- The FastAPI app must be running (default `http://localhost:8000`). Bring it up with `uvicorn app:app --reload`.
+- `NVIDIA_API_KEY` set in env so the judge LLM can be called.
 
-By book:
-  - hp4: 9
-  - hp7: 9
-
-By category:
-  - plot: 7
-  - character: 4
-  - magic: 4
-  - reasoning: 2
-  - factual: 1
-
-Avg expected_keywords_in_answer per entry:     4.1
-Avg expected_keywords_in_top_chunks per entry: 1.8
+```bash
+python -m eval.run_eval \
+  --output docs/eval-reports/eval_$(date -u +%Y-%m-%d).md
 ```
 
-Anything else (real eval runs, judge scoring, markdown reports) is being built incrementally in subsequent sub-PRs.
+Useful flags during iteration:
+
+| Flag | Purpose |
+|---|---|
+| `--max-questions 3` | Smoke-test with the first N questions instead of all 18 |
+| `--api-base http://...` | Point at a non-default app instance |
+| `--judge-model meta/llama-3.1-8b-instruct` | Use a cheaper / different judge to compare scoring stability |
+| `--latest docs/eval-reports/latest.md` | Stable path written alongside the dated file |
+
+Progress prints to stdout line-by-line as each question completes — useful since a 18-question run takes ~2 minutes.
 
 ## Why the dataset matters more than the code
 
