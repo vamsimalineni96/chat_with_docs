@@ -110,3 +110,24 @@ jobs:
 
       - name: Run pytest
         run: pytest tests/ -v
+
+  eval-dataset-validate:
+    name: Eval dataset shape
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # --validate-only is a pure-Python sanity check on eval/qa_set.jsonl —
+      # no network, no LLM. Cheap PR-time gate so a malformed JSONL line
+      # (missing field, bad JSON) never lands on main. The real eval runs
+      # locally on demand against a live app.
+      - name: Install validator deps
+        run: pip install python-dotenv==1.0.1 pyyaml==6.0.2
+
+      - name: Validate qa_set.jsonl
+        run: python -m eval.run_eval --validate-only
