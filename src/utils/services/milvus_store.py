@@ -1,3 +1,4 @@
+import time
 import uuid
 from datetime import datetime
 from typing import Any
@@ -10,6 +11,14 @@ from src.utils import config
 from src.utils.errors import CacheError, EmbeddingError, MilvusError
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
+
+# Transient upstream failures from NVIDIA NIM (502/503 from the embedding
+# endpoint, occasional connection resets) used to kill the whole ingest
+# half-way through. Five attempts with exponential backoff capped at 30s
+# absorbs the typical 1-2 minute upstream blip without making a true
+# outage drag on forever.
+EMBED_RETRY_MAX_ATTEMPTS = 5
+EMBED_RETRY_MAX_SLEEP_S = 30
 
 
 class MilvusStoreHandler:
@@ -109,6 +118,61 @@ class MilvusStoreHandler:
             ) from e
         return self._vector_store
 
+    def _add_texts_with_retry(
+        self,
+        texts: list[str],
+        metadatas: list[dict[str, Any]],
+    ) -> None:
+        """Wrap `add_texts` with exponential backoff on transient embed errors.
+
+        The NVIDIA embeddings endpoint occasionally returns 502/503 from its
+        upstream load balancer (awselb/2.0). Without a retry, one blip
+        anywhere in a 790-page ingest kills the whole run. Retries are on
+        broad `Exception` because the NVIDIA SDK raises a bare exception
+        with the status code in the message — parsing that message is
+        brittle and treating all failures here as potentially-transient is
+        cheap (worst case: a real bug gets retried 5 times before surfacing).
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, EMBED_RETRY_MAX_ATTEMPTS + 1):
+            try:
+                self._get_vector_store().add_texts(
+                    texts=texts, metadatas=metadatas
+                )
+                return
+            except Exception as e:
+                last_exc = e
+                if attempt == EMBED_RETRY_MAX_ATTEMPTS:
+                    break
+                sleep_s = min(2 ** attempt, EMBED_RETRY_MAX_SLEEP_S)
+                logger.warning(
+                    "add_texts attempt %d/%d failed (%s); retrying in %ds",
+                    attempt, EMBED_RETRY_MAX_ATTEMPTS, e, sleep_s,
+                )
+                time.sleep(sleep_s)
+        assert last_exc is not None
+        raise last_exc
+
+    def _delete_by_doc_id(self, doc_id: str) -> None:
+        """Idempotent cleanup of any existing chunks under this doc_id.
+
+        Called before insert when the caller provides a deterministic
+        doc_id (e.g. per-page hash) — makes re-running an ingestion safe.
+        A failed delete is logged but not raised: if nothing matches, or
+        the collection doesn't exist yet, the subsequent insert will
+        either succeed (clean state) or fail with a clearer error.
+        """
+        try:
+            self.client.delete(
+                collection_name=self.collection_name,
+                filter=f'doc_id == "{doc_id}"',
+            )
+        except Exception as e:
+            logger.warning(
+                "delete-by-doc_id %s on collection '%s' failed (continuing): %s",
+                doc_id, self.collection_name, e,
+            )
+
     def store_in_milvus(
         self,
         text: str,
@@ -120,9 +184,19 @@ class MilvusStoreHandler:
         """
         Split a long text, embed each chunk, and insert into Milvus via the
         langchain vectorstore.
+
+        When `doc_id` is provided by the caller (e.g. a deterministic
+        per-page hash), the operation is idempotent: any existing chunks
+        under that doc_id are deleted before inserting the new ones. This
+        lets an ingestion be safely re-run after a transient failure
+        without creating duplicates.
         """
         self.ensure_collection()
 
+        # Track whether the caller wants idempotent semantics. Random
+        # uuid4 ids stay non-idempotent for backwards compat with
+        # fire-and-forget inserts.
+        idempotent = doc_id is not None
         if doc_id is None:
             doc_id = str(uuid.uuid4())
         if source is None:
@@ -147,15 +221,15 @@ class MilvusStoreHandler:
             for order, _ in enumerate(chunks)
         ]
 
+        if idempotent:
+            self._delete_by_doc_id(doc_id)
+
         BATCH = config.INSERT_BATCH_SIZE
         try:
             for i in range(0, len(chunks), BATCH):
                 batch_texts = chunks[i : i + BATCH]
                 batch_meta = metadatas[i : i + BATCH]
-                self._get_vector_store().add_texts(
-                    texts=batch_texts,
-                    metadatas=batch_meta,
-                )
+                self._add_texts_with_retry(batch_texts, batch_meta)
                 logger.info(
                     "Indexed %d / %d chunks into Milvus collection '%s'",
                     min(i + len(batch_texts), len(chunks)),
