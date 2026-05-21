@@ -55,10 +55,17 @@ jobs:
       #   GHSA-926x-3r5x-gfhw  GHSA-pjwx-r37v-7724
       # langchain-text-splitters (1 CVE):
       #   GHSA-fv5p-p927-qmxr
+      # langchain-community (1 CVE):
+      #   PYSEC-2024-278 — same situation as langchain-core; fix lands in 1.x.
+      #   Tracked under issue #1 alongside the other langchain CVEs.
       # starlette (1 CVE):
       #   GHSA-7f5h-v6xp-fcq8 — fix is in 0.49.1, but fastapi 0.116.1 pins
       #   starlette < 0.49, so this needs a coordinated fastapi+starlette
       #   upgrade. Tracked in issue #2.
+      # flask-cors (1 CVE):
+      #   PYSEC-2024-271 — transitive dep via locust (load testing). Locust
+      #   pins an old flask-cors and we don't use flask-cors directly. Not
+      #   worth the locust upgrade churn for a load-test-only path.
 
       - name: Audit requirements.txt
         run: |
@@ -69,7 +76,9 @@ jobs:
             --ignore-vuln GHSA-926x-3r5x-gfhw \
             --ignore-vuln GHSA-pjwx-r37v-7724 \
             --ignore-vuln GHSA-fv5p-p927-qmxr \
-            --ignore-vuln GHSA-7f5h-v6xp-fcq8
+            --ignore-vuln GHSA-7f5h-v6xp-fcq8 \
+            --ignore-vuln PYSEC-2024-278 \
+            --ignore-vuln PYSEC-2024-271
 
 
 
