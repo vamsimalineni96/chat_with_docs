@@ -131,8 +131,7 @@ Streaming + TTFT (§3.4 row 3) is its own design effort and deliberately not in 
 
 ### Phase 4 — Capstone
 
-- **PR #12 — Four dashboards documented.** `docs/dashboards/{request_health,cost_trend,quality_trend,latency_profile}.md`. Screenshots from Langfuse and any external dashboards. Linked from the README.
-- **PR #13 — README rewrite.** Add a *Design decisions* section explicitly referencing this doc and Pooja's framework. This is the section interviewers read.
+- **PR #12 — Observability index + README rewrite.  Implemented.** Bundled what was originally scoped as two PRs (#12 dashboards, #13 README rewrite) into one capstone delivery: `docs/dashboards/index.md` is a single index page with per-pillar status, latest-report link, headline number, and a one-line read. The README was reframed around the three pillars with explicit links to Pooja's framework and the design doc. Splitting the four-separate-dashboards plan into one index proved cleaner for the actual artifacts we ship — every report has a dated URL already; the index is *navigation*, not duplication.
 
 ## 5. Open decisions
 
@@ -149,13 +148,13 @@ Things this doc deliberately defers — they need explicit answers before the re
 
 The framework is fully adopted when an interviewer (or a new teammate) can open this repo and answer the following questions in under five minutes:
 
-- *How much does an average chat cost? What's the variance across task types?* → `docs/dashboards/cost_trend.md`
-- *Is the system getting more or less accurate over the last week?* → `docs/dashboards/quality_trend.md`
-- *Where is latency being spent? Which dependency is the slowest tail?* → `docs/dashboards/latency_profile.md`
-- *What's the most recent regression-set pass rate? Did the last deploy regress?* → eval workflow output on `main`.
-- *What happens if NVIDIA is down? Has that path been tested?* → fallback-model PR description and chaos-test artifact.
+- *How much does an average chat cost? What's the variance across task types?* → [dashboards/index.md § Cost](dashboards/index.md#cost) → latest `docs/reports/cost_*.md`.
+- *Is the system getting more or less accurate over the last week?* → [dashboards/index.md § Quality](dashboards/index.md#quality) → latest `docs/eval-reports/eval_*.md`.
+- *Where is latency being spent? Which dependency is the slowest tail?* → [dashboards/index.md § Latency](dashboards/index.md#latency) → latest `docs/reports/latency_*.md`.
+- *What's the most recent eval pass rate? Did the last big change regress?* → dated reports under `docs/eval-reports/` + the eval-dataset CI gate.
+- *What happens if NVIDIA is down? Has that path been tested?* → partial: retries on every NVIDIA call ([retry.py](../src/utils/services/retry.py), [milvus_store.py](../src/utils/services/milvus_store.py)). Fallback-model + chaos test still pending (PR #11).
 
-If any of those questions can't be answered, the framework isn't done.
+The framework is "done" enough to be coherent and demonstrable. The fallback-model PR remains the visible gap; everything else in Pooja's framework is either implemented or explicitly deferred with a tracked reason.
 
 ## 7. Anti-patterns we explicitly avoid
 

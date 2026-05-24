@@ -9,11 +9,11 @@ The roadmap of work lives in [OBSERVABILITY.md §4](OBSERVABILITY.md). This file
 | Pillar | Status |
 |---|---|
 | **Cost** | ✅ Complete — tokenizer, aggregator, nightly automation all merged. First real report on main: [`docs/reports/cost_2026-05-19.md`](reports/cost_2026-05-19.md). |
-| **Quality** | 🟡 Harness complete + first baseline captured. First report: [`docs/eval-reports/eval_2026-05-20.md`](eval-reports/eval_2026-05-20.md). Baseline surfaced an HP7 ingestion gap (recall@5 hp4=0.83 vs hp7=0.17) — fix tracked separately. |
-| **Latency & reliability** | ⬜ Not started. |
-| **Capstone (dashboards, README rewrite)** | ⬜ Not started. |
+| **Quality** | ✅ Complete — harness + dataset CI gate + clean post-ingest-fix baseline. Latest: [`docs/eval-reports/eval_2026-05-21_hp4_clean.md`](eval-reports/eval_2026-05-21_hp4_clean.md). The first baseline ([`eval_2026-05-20.md`](eval-reports/eval_2026-05-20.md)) surfaced an HP7 ingestion gap that was fixed in the ingest-retry/dedup PR. |
+| **Latency & reliability** | 🟡 Mostly complete — nightly latency report ([`scripts/latency_report.py`](../scripts/latency_report.py)), retries wrapped around every NVIDIA call on the read path ([`src/utils/services/retry.py`](../src/utils/services/retry.py)) and write path. Fallback model + circuit breakers deferred (tracked in [OBSERVABILITY.md §3.4](OBSERVABILITY.md)). |
+| **Capstone (dashboards, README rewrite)** | ✅ Complete — [`docs/dashboards/index.md`](dashboards/index.md) is the operational snapshot; README reframed around the three-pillar framework. |
 
-5 of 11 roadmap items closed.
+10 of 11 roadmap items closed. Remaining: PR #11 (fallback model + chaos test).
 
 ---
 
