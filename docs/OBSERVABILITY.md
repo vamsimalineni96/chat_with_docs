@@ -82,7 +82,7 @@ This section is a deliberate audit, not a sales pitch. Each row is grounded in a
 | Capability | Status | Evidence |
 |---|---|---|
 | Per-stage timings captured | **Implemented.** `db_load`, `milvus`, `llm`, `db_save`, `total` in `chat_service.rag_output`. | [src/utils/chat/chat_service.py:159–180](../src/utils/chat/chat_service.py). |
-| P95/P99 rollup by stage and task type | **Missing aggregation.** Raw timings logged; no percentile dashboard. | — |
+| P95/P99 rollup by stage and task type | **Implemented.** Nightly latency report aggregates Langfuse trace data into p50/p95/p99 by task type and pipeline stage. | [scripts/latency_report.py](../scripts/latency_report.py), [docs/reports/](reports/) |
 | Time-to-first-token (TTFT) | **N/A.** Streaming is not yet wired on the `/chat` endpoint. | [app.py:61–170](../app.py). |
 | Retry / fallback rate logging | **Missing.** Errors are caught and re-raised; retries done by underlying SDKs are not explicitly counted. | [src/utils/services/inference.py:67–78](../src/utils/services/inference.py). |
 | Circuit breakers per dependency (NVIDIA, Milvus, Postgres, Redis) | **Missing.** A single NVIDIA outage would cascade. | — |
@@ -123,7 +123,7 @@ Judge calibration against human labels (§3.3 row 5) is deferred — recommended
 
 ### Phase 3 — Latency and reliability pillar
 
-- **PR #9 — Stage-level P95/P99 dashboard.** Query Langfuse for the past 7 days of `hybrid_retrieve`, `rerank`, `embed_query`, and chat-completion span durations; compute percentiles by stage + task type; commit `docs/dashboards/latency_profile.md` with the table. Alert thresholds (Pooja's): retrieval P99 > 800ms, end-to-end P95 > 8s. *Maps to §3.4 row 2.*
+- **PR #9 — Stage-level p50/p95/p99 latency report. ✅ Implemented.** `scripts/latency_report.py` pulls the past 7 days of Langfuse traces (v1 endpoints only — works on self-hosted + Cloud), computes percentiles by task type and pipeline stage, plus a slowest-traces top-10. Same shape as the cost report; stage classifiers are shared. Nightly cron at 06:30 UTC ([latency-report-nightly.yml](../.github/workflows/latency-report-nightly.yml)) commits dated reports to [`docs/reports/`](reports/). Alert thresholds (Pooja's retrieval p99 > 800ms, end-to-end p95 > 8s) are deferred to a follow-up PR once a few weeks of nightly data are accumulated. *Maps to §3.4 row 2.*
 - **PR #10 — Retry logging + circuit breakers.** Wrap NVIDIA, Milvus, Postgres, Redis calls in `pybreaker`-style circuit breakers. Log every retry with reason and attempt-count. Surface `retry_rate` and circuit state per dependency. *Maps to §3.4 rows 4–5.*
 - **PR #11 — Fallback model + chaos test.** Configure a secondary LLM (different NVIDIA endpoint or HF Inference) for graceful degradation when the primary fails the circuit breaker. Chaos test forces the primary down and verifies fallback path; `fallback_rate` becomes a tracked metric. *Maps to §3.4 row 6.*
 
