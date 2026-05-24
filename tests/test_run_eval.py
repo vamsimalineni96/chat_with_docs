@@ -6,8 +6,8 @@ handling and the assembled-row shape independently of the chat service
 and the judge implementation.
 """
 
-from eval.judge import JudgeResult
-from eval.run_eval import evaluate_one, run_eval
+from evals.quality.judge import JudgeResult
+from evals.quality.run_eval import evaluate_one, run_eval
 
 # --- chat caller stubs ------------------------------------------------------
 

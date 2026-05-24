@@ -3,10 +3,10 @@
 Two modes:
 
   # 1. Validate the qa_set (cheap, no LLM, no network):
-  python -m eval.run_eval --validate-only
+  python -m evals.quality.run_eval --validate-only
 
   # 2. Full end-to-end run against the live /chat endpoint + judge LLM:
-  python -m eval.run_eval --output docs/eval-reports/eval_$(date +%Y-%m-%d).md
+  python -m evals.quality.run_eval --output docs/eval-reports/eval_$(date +%Y-%m-%d).md
 
 Full-run mode requires:
   - The FastAPI app running locally (default: http://localhost:8000)
@@ -30,11 +30,15 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from eval.judge import JudgeResult, judge
-from eval.metrics import keyword_recall_at_k, reciprocal_rank
-from eval.reporter import render_markdown
+from .judge import JudgeResult, judge
+from .metrics import keyword_recall_at_k, reciprocal_rank
+from .reporter import render_markdown
 
 load_dotenv()
+
+# Module-relative default — keeps the CLI working from any cwd
+# without forcing the caller to chdir into the repo root.
+_DEFAULT_QA_SET = Path(__file__).parent / "qa_set.jsonl"
 
 REQUIRED_FIELDS = {
     "id",
@@ -127,7 +131,7 @@ def _default_chat_call(
 ) -> dict[str, Any]:
     """POST to the FastAPI /chat endpoint with debug=true.
 
-    Deferred import of `requests` keeps `import eval.run_eval` cheap
+    Deferred import of `requests` keeps `import evals.quality.run_eval` cheap
     (no requests needed when tests substitute a stub caller).
     """
     import requests  # noqa: PLC0415
@@ -281,7 +285,7 @@ def _format_progress(row: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--qa-set", type=Path, default=Path("eval/qa_set.jsonl"))
+    parser.add_argument("--qa-set", type=Path, default=_DEFAULT_QA_SET)
     parser.add_argument(
         "--validate-only",
         action="store_true",

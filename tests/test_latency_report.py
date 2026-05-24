@@ -7,7 +7,7 @@ Langfuse, no network. Same shape as tests/test_cost_report.py.
 import json
 from pathlib import Path
 
-from scripts.latency_report import (
+from evals.latency.latency_report import (
     aggregate,
     percentiles,
     render_markdown,

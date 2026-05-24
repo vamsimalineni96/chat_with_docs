@@ -121,7 +121,7 @@ def _validate_scores(parsed: dict[str, Any]) -> tuple[int, int, int, str]:
 def _call_judge_llm(system: str, user: str, model: str) -> str:
     """Call NVIDIA NIM. Module-level so tests can monkeypatch it.
 
-    Imports are deferred to inside the function so `import eval.judge`
+    Imports are deferred to inside the function so `import evals.quality.judge`
     doesn't pull langchain — tests that mock this function never touch it.
     """
     from langchain_core.messages import HumanMessage, SystemMessage

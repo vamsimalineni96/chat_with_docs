@@ -2,8 +2,8 @@
 
 Produces a markdown cost report from Langfuse spans. Supports two modes:
 
-    python scripts/cost_report.py --source file --input tests/fixtures/observations.json
-    python scripts/cost_report.py --source live --days 7
+    python -m evals.cost.cost_report --source file --input tests/fixtures/observations.json
+    python -m evals.cost.cost_report --source live --days 7
 
 The pure-function aggregation pipeline (classify_stage, task_type_from_tags,
 compute_cost, aggregate, summarize_by_task, summarize_by_stage, render_markdown)
@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scripts.pricing import (
+from .pricing import (
     DEFAULT_RERANK_PRICE_PER_CALL_USD,
     MODEL_PRICES,
     RERANK_PRICE_PER_CALL_USD,
@@ -207,7 +207,7 @@ def render_markdown(
     lines.append("")
     lines.append(f"- **Source:** {source_label}")
     lines.append(f"- **Window:** {window_label}")
-    lines.append("- **Generator:** [scripts/cost_report.py](../../scripts/cost_report.py)")
+    lines.append("- **Generator:** [evals/cost/cost_report.py](../../evals/cost/cost_report.py)")
     lines.append("")
 
     lines.append("## Aggregate")
@@ -244,7 +244,7 @@ def render_markdown(
 
     lines.append("## Notes")
     lines.append("")
-    lines.append("- Prices are sourced from [scripts/pricing.py](../../scripts/pricing.py). "
+    lines.append("- Prices are sourced from [evals/cost/pricing.py](../../evals/cost/pricing.py). "
                  "Replace with real contract rates before relying on absolute USD figures.")
     lines.append("- Unpriced models (not in the table) currently contribute $0; "
                  "they still appear in token counts.")

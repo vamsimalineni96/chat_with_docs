@@ -10,7 +10,7 @@ The roadmap of work lives in [OBSERVABILITY.md §4](OBSERVABILITY.md). This file
 |---|---|
 | **Cost** | ✅ Complete — tokenizer, aggregator, nightly automation all merged. First real report on main: [`docs/reports/cost_2026-05-19.md`](reports/cost_2026-05-19.md). |
 | **Quality** | ✅ Complete — harness + dataset CI gate + clean post-ingest-fix baseline. Latest: [`docs/eval-reports/eval_2026-05-21_hp4_clean.md`](eval-reports/eval_2026-05-21_hp4_clean.md). The first baseline ([`eval_2026-05-20.md`](eval-reports/eval_2026-05-20.md)) surfaced an HP7 ingestion gap that was fixed in the ingest-retry/dedup PR. |
-| **Latency & reliability** | 🟡 Mostly complete — nightly latency report ([`scripts/latency_report.py`](../scripts/latency_report.py)), retries wrapped around every NVIDIA call on the read path ([`src/utils/services/retry.py`](../src/utils/services/retry.py)) and write path. Fallback model + circuit breakers deferred (tracked in [OBSERVABILITY.md §3.4](OBSERVABILITY.md)). |
+| **Latency & reliability** | 🟡 Mostly complete — nightly latency report ([`evals/latency/latency_report.py`](../evals/latency/latency_report.py)), retries wrapped around every NVIDIA call on the read path ([`src/utils/services/retry.py`](../src/utils/services/retry.py)) and write path. Fallback model + circuit breakers deferred (tracked in [OBSERVABILITY.md §3.4](OBSERVABILITY.md)). |
 | **Capstone (dashboards, README rewrite)** | ✅ Complete — [`docs/dashboards/index.md`](dashboards/index.md) is the operational snapshot; README reframed around the three-pillar framework. |
 
 10 of 11 roadmap items closed. Remaining: PR #11 (fallback model + chaos test).
@@ -58,7 +58,7 @@ Deliberately downgraded pymupdf back to 1.26.6 on a throwaway branch (`learn/cve
 
 ### PR #4 — Cost-per-task aggregator ([`cost/cost-per-task-aggregation`](https://github.com/vamsimalineni96/chat_with_docs/pulls?q=cost%2Fcost-per-task-aggregation))
 
-**What:** A pure-Python aggregator (`scripts/cost_report.py`) that pulls Langfuse spans, joins them against a model→price table (`scripts/pricing.py`), and emits a markdown report partitioning spend by *task type* (`cache-hit` vs `rag-full`) and *pipeline stage* (`embedding`, `rerank`, `llm`). Two modes: `--source live` for real Langfuse, `--source file` for the committed fixture.
+**What:** A pure-Python aggregator (`evals/cost/cost_report.py`) that pulls Langfuse spans, joins them against a model→price table (`evals/cost/pricing.py`), and emits a markdown report partitioning spend by *task type* (`cache-hit` vs `rag-full`) and *pipeline stage* (`embedding`, `rerank`, `llm`). Two modes: `--source live` for real Langfuse, `--source file` for the committed fixture.
 
 **Why both modes:** Self-hosted Langfuse ran on `localhost:3000`, unreachable from GitHub Actions. Fixture mode let CI verify the aggregation logic on every PR without network access; live mode produced real reports locally.
 
@@ -118,7 +118,7 @@ These came up *during* the PRs above and are worth remembering on their own:
 
 **PR #7 (in the roadmap, the showpiece): eval harness.**
 
-Per [OBSERVABILITY.md §4](OBSERVABILITY.md) — Phase 2, Quality pillar. Concrete shape: `eval/qa_set.jsonl` (15–25 Q&A pairs over HP4/HP7), `eval/run_eval.py` (calls `/chat`, captures retrieved chunks + answer, computes recall@k + MRR), `eval/judge.py` (decomposed LLM-as-judge: groundedness / accuracy / completeness — using a *different* model family than the generator), `eval/reporter.py` (markdown report), `.github/workflows/eval.yml` (`workflow_dispatch` + nightly cron).
+Per [OBSERVABILITY.md §4](OBSERVABILITY.md) — Phase 2, Quality pillar. Concrete shape: `evals/quality/qa_set.jsonl` (15–25 Q&A pairs over HP4/HP7), `evals/quality/run_eval.py` (calls `/chat`, captures retrieved chunks + answer, computes recall@k + MRR), `evals/quality/judge.py` (decomposed LLM-as-judge: groundedness / accuracy / completeness — using a *different* model family than the generator), `evals/quality/reporter.py` (markdown report), `.github/workflows/eval.yml` (`workflow_dispatch` + nightly cron).
 
 This is the single biggest portfolio differentiator — 90% of RAG portfolios skip evals entirely. Budget: ~6 hours of focused work, split across 4–5 sub-PRs (scaffold → metrics → judge → orchestration → workflow).
 

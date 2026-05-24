@@ -45,7 +45,7 @@ jobs:
           LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
         run: |
           DATE=$(date -u +%Y-%m-%d)
-          python -m scripts.cost_report \
+          python -m evals.cost.cost_report \
             --source live \
             --days 7 \
             --output "docs/reports/cost_${DATE}.md"

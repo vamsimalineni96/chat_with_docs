@@ -8,7 +8,7 @@ after max retries, score-range validation, and the overall property.
 
 import json
 
-from eval import judge as judge_mod
+from evals.quality import judge as judge_mod
 
 
 def _make_constant_mock(response_text: str):

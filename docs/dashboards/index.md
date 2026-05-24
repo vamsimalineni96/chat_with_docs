@@ -12,7 +12,7 @@ Design rationale and gap audit: [`../OBSERVABILITY.md`](../OBSERVABILITY.md). Bu
 
 - **Latest:** [`../reports/cost_2026-05-19.md`](../reports/cost_2026-05-19.md)
 - **Sample (fixture):** [`../reports/cost_sample.md`](../reports/cost_sample.md)
-- **Source script:** [`../../scripts/cost_report.py`](../../scripts/cost_report.py)
+- **Source script:** [`../../evals/cost/cost_report.py`](../../evals/cost/cost_report.py)
 - **Cron:** [`../../.github/workflows/cost-report-nightly.yml`](../../.github/workflows/cost-report-nightly.yml) — 06:00 UTC daily (currently paused via the GitHub UI while in dev; re-enable in *Actions → Cost report (nightly) → Enable workflow*)
 
 Headline from the latest run: 3 RAG-full traces over the 7-day window, **~$0.0001 per task** at current pricing. The `cache-hit` task type wasn't exercised in this window — when it is, expect $/task to drop by 2–3 orders of magnitude (the cache short-circuits the LLM stage entirely).
@@ -28,7 +28,7 @@ How to read a cost report: see [`../reports/README.md#how-to-read-a-cost-report`
 - **Latest (clean post-ingest-fix baseline):** [`../eval-reports/eval_2026-05-21_hp4_clean.md`](../eval-reports/eval_2026-05-21_hp4_clean.md)
 - **First baseline (revealed an HP7 ingestion gap):** [`../eval-reports/eval_2026-05-20.md`](../eval-reports/eval_2026-05-20.md)
 - **Sample (fixture):** [`../eval-reports/eval_sample.md`](../eval-reports/eval_sample.md)
-- **Source script:** [`../../eval/run_eval.py`](../../eval/run_eval.py)
+- **Source script:** [`../../evals/quality/run_eval.py`](../../evals/quality/run_eval.py)
 - **CI gate:** dataset shape is validated on every PR — see the `eval-dataset-validate` job in [`../../.github/workflows/ci.yml`](../../.github/workflows/ci.yml). The full eval is run manually against a live app, not on PRs.
 
 Headline from the clean baseline (9 HP4 questions, gemma-4-31b generator, llama-3.3-70b judge): **recall@5 0.83, groundedness 4.67/5, accuracy 4.78/5, completeness 3.44/5.** Zero 5xx errors, zero rate-limit retries.
@@ -46,7 +46,7 @@ How to read an eval report: see [`../eval-reports/README.md`](../eval-reports/RE
 > *Where is time being spent? Where are the tails?*
 
 - **Latest (sample only — live cron paused):** [`../reports/latency_sample.md`](../reports/latency_sample.md)
-- **Source script:** [`../../scripts/latency_report.py`](../../scripts/latency_report.py)
+- **Source script:** [`../../evals/latency/latency_report.py`](../../evals/latency/latency_report.py)
 - **Cron:** [`../../.github/workflows/latency-report-nightly.yml`](../../.github/workflows/latency-report-nightly.yml) — 06:30 UTC daily (currently paused via the GitHub UI while in dev)
 
 Headline from the sample fixture (5 traces): **LLM stage eats 94.9% of total request time.** Cache-hit traces complete in ~120ms vs RAG-full traces at 5–22 seconds — two orders of magnitude. Per-stage breakdown:

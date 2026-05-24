@@ -2,7 +2,7 @@
 
 - **Source:** fixture (tests/fixtures/observations.json)
 - **Window:** fixture-defined
-- **Generator:** [scripts/cost_report.py](../../scripts/cost_report.py)
+- **Generator:** [evals/cost/cost_report.py](../../evals/cost/cost_report.py)
 
 ## Aggregate
 
@@ -29,6 +29,6 @@
 
 ## Notes
 
-- Prices are sourced from [scripts/pricing.py](../../scripts/pricing.py). Replace with real contract rates before relying on absolute USD figures.
+- Prices are sourced from [evals/cost/pricing.py](../../evals/cost/pricing.py). Replace with real contract rates before relying on absolute USD figures.
 - Unpriced models (not in the table) currently contribute $0; they still appear in token counts.
 - Rerank is priced per-call (NVIDIA hosted endpoint), not per token.

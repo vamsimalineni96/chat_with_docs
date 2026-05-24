@@ -21,7 +21,7 @@ jobs:
       # No runtime deps required — the file-mode path is pure-Python.
       - name: Run report
         run: |
-          python -m scripts.cost_report \
+          python -m evals.cost.cost_report \
             --source file \
             --input tests/fixtures/observations.json \
             --output docs/reports/cost_sample.md
