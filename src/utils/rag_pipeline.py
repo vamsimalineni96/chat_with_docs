@@ -5,8 +5,13 @@ from langchain_core.runnables import RunnableLambda
 
 from src.utils import config
 from src.utils.errors import InferenceError
-from src.utils.observability import observe, update_current_observation
+from src.utils.observability import (
+    observe,
+    update_current_observation,
+    update_current_trace,
+)
 from src.utils.services.chunk_ranking import NVidiaReranker
+from src.utils.services.heuristics import evaluate_heuristics
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
@@ -194,9 +199,16 @@ def answer_question(
 
     if not retrieved:
         logger.info("No relevant context found in the vector store.")
+        canned_answer = (
+            "I couldn't find anything in the indexed document that touches on that. "
+            "Could you try rephrasing, or asking about a different topic from the book?"
+        )
+        # Even the canned no-context path runs through heuristics so we
+        # don't have a silent gap in trace tagging — the refusal check
+        # will (correctly) flag this response as a refusal.
+        _record_heuristics(canned_answer, retrieved_chunks=[], debug_info=debug_info)
         return {
-            "answer": "I couldn't find anything in the indexed document that touches on that. "
-                      "Could you try rephrasing, or asking about a different topic from the book?",
+            "answer": canned_answer,
             "t_milvus_start": t_milvus_start,
             "t_milvus_end": t_milvus_end,
             "t_llm_start": t_milvus_start,
@@ -245,6 +257,8 @@ def answer_question(
         except Exception as e:
             logger.exception("Cache write failed (non-fatal): %s", e)
 
+    _record_heuristics(answer, retrieved_chunks=retrieved, debug_info=debug_info)
+
     return {
         "answer": answer,
         "t_milvus_start": t_milvus_start,
@@ -253,3 +267,32 @@ def answer_question(
         "t_llm_end": t_llm_end,
         "debug": debug_info,
     }
+
+
+def _record_heuristics(
+    answer: str,
+    *,
+    retrieved_chunks: list[dict[str, Any]],
+    debug_info: dict[str, Any] | None,
+) -> None:
+    """Evaluate heuristics, tag the Langfuse trace, and surface in debug.
+
+    Failures here never propagate — heuristics are observability, not
+    enforcement. A broken regex must not break the request path.
+    """
+    try:
+        report = evaluate_heuristics(answer, retrieved_chunks)
+    except Exception as e:
+        logger.warning("Heuristic evaluation failed (non-fatal): %s", e)
+        return
+
+    if debug_info is not None:
+        debug_info["heuristics"] = report.to_dict()
+
+    tags = [f"heuristic_pass:{str(report.overall_passed).lower()}"]
+    if not report.overall_passed:
+        tags.append("heuristic_failed:" + ",".join(report.failed_check_names))
+    try:
+        update_current_trace(tags=tags)
+    except Exception as e:
+        logger.debug("update_current_trace from heuristics failed (non-fatal): %s", e)
