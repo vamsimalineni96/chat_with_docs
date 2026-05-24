@@ -60,6 +60,25 @@ def test_refusal_flags_context_doesnt_specify():
     assert check_refusal("The context doesn't specify the three tasks.") is False
 
 
+def test_refusal_flags_no_mention_of():
+    # Live failure caught after the heuristics PR shipped: this exact
+    # phrasing slipped through because the earlier patterns matched
+    # "context doesn't mention X", not the inverted "no mention of X
+    # in the context". Added the `\bno mention of\b` pattern.
+    answer = (
+        "There's no mention of the chemical formula for caffeine in the "
+        "provided context."
+    )
+    assert check_refusal(answer) is False
+
+
+def test_refusal_flags_none_of_them_mention():
+    # Paired with the above — same model response also contained
+    # "none of them mention caffeine or its chemical formula".
+    answer = "But none of them mention caffeine or its chemical formula."
+    assert check_refusal(answer) is False
+
+
 def test_refusal_is_case_insensitive():
     assert check_refusal("I DON'T KNOW.") is False
 

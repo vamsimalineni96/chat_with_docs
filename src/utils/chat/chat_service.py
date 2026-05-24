@@ -139,6 +139,26 @@ def rag_output(
     t_llm_end = result["t_llm_end"]
     debug_info = result.get("debug")
 
+    # Heuristics evaluation is computed in the RAG pipeline; tagging
+    # happens *here* because this is the trace-root span. Tagging from
+    # inside answer_question (a child observation) attaches the tag to
+    # the child instead of bubbling up to the trace, making it
+    # invisible in the Langfuse trace-level tag view.
+    heuristics_report = result.get("heuristics")
+    if heuristics_report is not None:
+        tags = [f"heuristic_pass:{str(heuristics_report['overall_passed']).lower()}"]
+        if not heuristics_report["overall_passed"]:
+            tags.append(
+                "heuristic_failed:" + ",".join(heuristics_report["failed_checks"])
+            )
+        try:
+            update_current_trace(tags=tags)
+        except Exception as e:
+            logger.debug(
+                "update_current_trace from heuristics tagging failed (non-fatal): %s",
+                e,
+            )
+
     logger.info("Storing the chatbot's reply to the user query")
     try:
         t_save_start = time.perf_counter()

@@ -26,9 +26,11 @@ from __future__ import annotations
 import re
 from dataclasses import asdict, dataclass
 
-# Common refusal / hedge phrases. Calibrated to the actual model
-# outputs we've seen in eval runs (gemma-4-31b-it tends toward
-# "the context doesn't specify" rather than "I cannot answer").
+# Common refusal / hedge phrases. Calibrated against actual model
+# outputs we've seen in eval and live runs — gemma-4-31b-it tends
+# toward "the context doesn't specify" / "There's no mention of X"
+# rather than "I cannot answer". When a new phrasing slips through,
+# extend the list and add a test case.
 REFUSAL_PATTERNS = (
     r"\bi (?:don'?t|do not) know\b",
     r"\bi'?m not (?:sure|certain)\b",
@@ -37,6 +39,13 @@ REFUSAL_PATTERNS = (
     r"\bno (?:information|details) (?:about|on|regarding)\b",
     r"\bunable to (?:determine|find|locate)\b",
     r"\bnot (?:provided|specified|mentioned) in the (?:context|text)\b",
+    # Caught live: "There's no mention of the chemical formula for caffeine
+    # in the provided context" — the syntactic inversion of "context doesn't
+    # mention X" that the earlier patterns missed.
+    r"\bno mention of\b",
+    # Caught live: "none of them mention caffeine or its chemical formula"
+    # — paired with "no mention of" for the same response.
+    r"\bnone of (?:them|these|those)\b",
 )
 
 # Below this many characters, an answer is almost certainly evasive
