@@ -13,9 +13,9 @@ Three pillars, each with a measurement script, a CI/cron path, and dated artifac
 
 | Pillar | What it answers | How |
 |---|---|---|
-| **Cost** | What does a task cost? | [`scripts/cost_report.py`](scripts/cost_report.py) → dated [`docs/reports/cost_*.md`](docs/reports/) (nightly cron) |
-| **Quality** | Are answers grounded, accurate, and complete? | [`eval/run_eval.py`](eval/run_eval.py) + LLM judge → dated [`docs/eval-reports/eval_*.md`](docs/eval-reports/). Schema gated on every PR. |
-| **Latency** | Where is time being spent? Where are the tails? | [`scripts/latency_report.py`](scripts/latency_report.py) → dated [`docs/reports/latency_*.md`](docs/reports/) (nightly cron) |
+| **Cost** | What does a task cost? | [`evals/cost/cost_report.py`](evals/cost/cost_report.py) → dated [`docs/reports/cost_*.md`](docs/reports/) (nightly cron) |
+| **Quality** | Are answers grounded, accurate, and complete? | [`evals/quality/run_eval.py`](evals/quality/run_eval.py) + LLM judge → dated [`docs/eval-reports/eval_*.md`](docs/eval-reports/). Schema gated on every PR. |
+| **Latency** | Where is time being spent? Where are the tails? | [`evals/latency/latency_report.py`](evals/latency/latency_report.py) → dated [`docs/reports/latency_*.md`](docs/reports/) (nightly cron) |
 
 The story of how each pillar was built, in order: [`docs/PROGRESS.md`](docs/PROGRESS.md). The design rationale and gap audit: [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md). The latest-numbers index: [`docs/dashboards/index.md`](docs/dashboards/index.md).
 
@@ -59,14 +59,14 @@ Langfuse: configured against Langfuse Cloud — set `LANGFUSE_PUBLIC_KEY`, `LANG
 
 ```bash
 # Quality — runs the 18-question eval against the live app and writes a dated report.
-python -m eval.run_eval --output docs/eval-reports/eval_$(date +%Y-%m-%d).md
+python -m evals.quality.run_eval --output docs/eval-reports/eval_$(date +%Y-%m-%d).md
 
 # Cost — pulls last 7 days of Langfuse traces, attributes by task + stage.
-python -m scripts.cost_report --source live --days 7 \
+python -m evals.cost.cost_report --source live --days 7 \
   --output docs/reports/cost_$(date +%Y-%m-%d).md
 
 # Latency — pulls last 7 days of Langfuse traces, computes p50/p95/p99.
-python -m scripts.latency_report --source live --days 7 \
+python -m evals.latency.latency_report --source live --days 7 \
   --output docs/reports/latency_$(date +%Y-%m-%d).md
 ```
 

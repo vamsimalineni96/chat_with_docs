@@ -8,7 +8,7 @@ will also pass in CI's `unit-tests` job.
 import json
 from pathlib import Path
 
-from scripts.cost_report import (
+from evals.cost.cost_report import (
     aggregate,
     classify_stage,
     compute_cost,

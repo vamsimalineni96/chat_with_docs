@@ -3,8 +3,8 @@
 Produces a markdown latency report with p50/p95/p99 by task and by stage,
 plus a "slowest traces" outlier list. Two modes:
 
-    python scripts/latency_report.py --source file --input tests/fixtures/observations_latency.json --output /tmp/latency.md
-    python scripts/latency_report.py --source live --days 7 --output docs/reports/latency_$(date -u +%Y-%m-%d).md
+    python -m evals.latency.latency_report --source file --input tests/fixtures/observations_latency.json --output /tmp/latency.md
+    python -m evals.latency.latency_report --source live --days 7 --output docs/reports/latency_$(date -u +%Y-%m-%d).md
 
 The pure-function aggregation pipeline (`percentiles`, `aggregate`,
 `summarize_by_task`, `summarize_by_stage`, `slow_traces`,
@@ -12,8 +12,8 @@ The pure-function aggregation pipeline (`percentiles`, `aggregate`,
 Langfuse dependency.
 
 Stage classification and task-type tag mapping are imported from
-`scripts.cost_report` so a span called `rerank` always lands in the same
-bucket across both reports.
+`evals.cost.cost_report` so a span called `rerank` always lands in the
+same bucket across both reports — a deliberate cross-pillar reuse.
 
 See docs/OBSERVABILITY.md §3.4 for the design rationale.
 """
@@ -31,7 +31,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from scripts.cost_report import classify_stage, task_type_from_tags
+from evals.cost.cost_report import classify_stage, task_type_from_tags
 
 # ----------------------------------------------------------------------------
 # Pure functions — tested directly, no I/O.
@@ -201,7 +201,7 @@ def render_markdown(
     lines.append(f"- **Source:** {source_label}")
     lines.append(f"- **Window:** {window_label}")
     lines.append(
-        "- **Generator:** [scripts/latency_report.py](../../scripts/latency_report.py)"
+        "- **Generator:** [evals/latency/latency_report.py](../../evals/latency/latency_report.py)"
     )
     lines.append("")
 
@@ -260,7 +260,7 @@ def render_markdown(
     )
     lines.append(
         "- Stage classification is shared with the cost report — see "
-        "`scripts.cost_report.classify_stage`."
+        "`evals.cost.cost_report.classify_stage`."
     )
     return "\n".join(lines) + "\n"
 

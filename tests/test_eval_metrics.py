@@ -5,7 +5,7 @@ boundaries) rather than exact floating-point equalities where possible —
 so the suite survives minor implementation tweaks.
 """
 
-from eval.metrics import (
+from evals.quality.metrics import (
     keyword_recall_at_k,
     latency_percentiles,
     mrr,

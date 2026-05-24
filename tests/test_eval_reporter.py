@@ -9,7 +9,7 @@ substring matches that would shatter on a small format tweak.
 import json
 from pathlib import Path
 
-from eval.reporter import render_markdown
+from evals.quality.reporter import render_markdown
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "eval_results.json"
 

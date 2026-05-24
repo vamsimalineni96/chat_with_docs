@@ -2,7 +2,7 @@
 
 - **Source:** fixture (tests/fixtures/observations_latency.json)
 - **Window:** fixture-defined
-- **Generator:** [scripts/latency_report.py](../../scripts/latency_report.py)
+- **Generator:** [evals/latency/latency_report.py](../../evals/latency/latency_report.py)
 
 ## Aggregate
 
@@ -43,4 +43,4 @@
 
 - Percentiles use nearest-rank with no interpolation. With small N (<100), p99 is effectively max.
 - Trace total is wall-clock from Langfuse when available, else the sum of observation durations (may over-count if spans overlap).
-- Stage classification is shared with the cost report — see `scripts.cost_report.classify_stage`.
+- Stage classification is shared with the cost report — see `evals.cost.cost_report.classify_stage`.

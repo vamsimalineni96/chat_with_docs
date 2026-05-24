@@ -1,6 +1,6 @@
 # Eval harness
 
-The Quality pillar of the observability framework (see [OBSERVABILITY.md §3.3](../docs/OBSERVABILITY.md)). A hand-crafted Q&A dataset plus a runner that exercises `/chat`, scores retrieval, judges answer quality with an independent LLM, and emits a markdown report.
+The Quality pillar of the observability framework (see [OBSERVABILITY.md §3.3](../../docs/OBSERVABILITY.md)). A hand-crafted Q&A dataset plus a runner that exercises `/chat`, scores retrieval, judges answer quality with an independent LLM, and emits a markdown report.
 
 ## Directory layout
 
@@ -42,7 +42,7 @@ Two keyword sets, used differently:
 ### Validate the dataset only (no LLM, no network)
 
 ```bash
-python -m eval.run_eval --validate-only
+python -m evals.quality.run_eval --validate-only
 ```
 
 ### Full end-to-end run
@@ -52,7 +52,7 @@ Prerequisites:
 - `NVIDIA_API_KEY` set in env so the judge LLM can be called.
 
 ```bash
-python -m eval.run_eval \
+python -m evals.quality.run_eval \
   --output docs/eval-reports/eval_$(date -u +%Y-%m-%d).md
 ```
 

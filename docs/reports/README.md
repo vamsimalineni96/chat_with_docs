@@ -2,8 +2,8 @@
 
 The operational view of the Cost and Latency pillars (see [OBSERVABILITY.md](../OBSERVABILITY.md)). Two scripts, two nightly crons, two report families — all built off the same Langfuse trace data.
 
-- [`scripts/cost_report.py`](../../scripts/cost_report.py) attributes token usage to a *task type* (`cache-hit` vs `rag-full`) and a *pipeline stage* (`embedding`, `rerank`, `llm`, …), priced against [`scripts/pricing.py`](../../scripts/pricing.py).
-- [`scripts/latency_report.py`](../../scripts/latency_report.py) attributes per-trace and per-stage latency (p50 / p95 / p99) to the same task types and stages. Same classifiers; symmetric reports.
+- [`evals/cost/cost_report.py`](../../evals/cost/cost_report.py) attributes token usage to a *task type* (`cache-hit` vs `rag-full`) and a *pipeline stage* (`embedding`, `rerank`, `llm`, …), priced against [`evals/cost/pricing.py`](../../evals/cost/pricing.py).
+- [`evals/latency/latency_report.py`](../../evals/latency/latency_report.py) attributes per-trace and per-stage latency (p50 / p95 / p99) to the same task types and stages. Same classifiers; symmetric reports.
 
 ## Files
 
@@ -19,11 +19,11 @@ The operational view of the Cost and Latency pillars (see [OBSERVABILITY.md](../
 ### From the checked-in fixtures (no Langfuse needed)
 
 ```bash
-python -m scripts.cost_report --source file \
+python -m evals.cost.cost_report --source file \
   --input tests/fixtures/observations.json \
   --output docs/reports/cost_sample.md
 
-python -m scripts.latency_report --source file \
+python -m evals.latency.latency_report --source file \
   --input tests/fixtures/observations_latency.json \
   --output docs/reports/latency_sample.md
 ```
@@ -44,10 +44,10 @@ You can also trigger either workflow manually from the GitHub Actions tab → *R
 Requires `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` set in your environment or `.env`:
 
 ```bash
-python -m scripts.cost_report --source live --days 7 \
+python -m evals.cost.cost_report --source live --days 7 \
   --output docs/reports/cost_$(date +%Y-%m-%d).md
 
-python -m scripts.latency_report --source live --days 7 \
+python -m evals.latency.latency_report --source live --days 7 \
   --output docs/reports/latency_$(date +%Y-%m-%d).md
 ```
 
@@ -60,7 +60,7 @@ If the Langfuse SDK shape ever drifts, the only thing to patch is `fetch_from_la
 1. **What does an answer cost on average?** → *Cost per successful task* row in *Aggregate*.
 2. **Is the cache earning its keep?** → Compare `$/task` for `cache-hit` vs `rag-full` in *By task type*. Cache hits should be 2–3 orders of magnitude cheaper.
 3. **Where would I save the most by optimizing?** → `Share` column in *By pipeline stage*.
-4. **Are any models unpriced?** → If a span's model is missing from [`scripts/pricing.py`](../../scripts/pricing.py), it shows up with `$0.000000` but real token counts. Update the pricing table.
+4. **Are any models unpriced?** → If a span's model is missing from [`evals/cost/pricing.py`](../../evals/cost/pricing.py), it shows up with `$0.000000` but real token counts. Update the pricing table.
 
 ## How to read a latency report
 
