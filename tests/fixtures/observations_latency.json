@@ -1,0 +1,54 @@
+{
+  "_comment": "Synthetic Langfuse-shaped data used by tests/test_latency_report.py and to generate docs/reports/latency_sample.md. Trace IDs mirror observations.json (the cost fixture) for symmetry. trace.latency_ms is the wall-clock the user waited; observation.duration_ms is per-stage. Cache hits are short (~120ms); RAG full runs span 5-22 seconds. Each pipeline stage is exercised at least once.",
+  "traces": [
+    {
+      "id": "trace-cache-1",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "cache-path", "normal"],
+      "timestamp": "2026-05-23T10:00:00Z",
+      "latency_ms": 118.0
+    },
+    {
+      "id": "trace-cache-2",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "cache-path", "normal"],
+      "timestamp": "2026-05-23T10:01:00Z",
+      "latency_ms": 145.0
+    },
+    {
+      "id": "trace-rag-1",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "rag-path", "normal"],
+      "timestamp": "2026-05-23T10:02:00Z",
+      "latency_ms": 5320.0
+    },
+    {
+      "id": "trace-rag-2",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "rag-path", "normal"],
+      "timestamp": "2026-05-23T10:03:00Z",
+      "latency_ms": 8750.0
+    },
+    {
+      "id": "trace-rag-3",
+      "tags": ["prompt:v2", "collection:docs", "domain:default", "rag-path", "debug"],
+      "timestamp": "2026-05-23T10:04:00Z",
+      "latency_ms": 22480.0
+    }
+  ],
+  "observations": [
+    {"id": "o-cache-1-embed",  "trace_id": "trace-cache-1", "name": "embed_query",  "type": "generation", "duration_ms": 92.0},
+    {"id": "o-cache-1-lookup", "trace_id": "trace-cache-1", "name": "cache_lookup", "type": "span",       "duration_ms": 23.0},
+
+    {"id": "o-cache-2-embed",  "trace_id": "trace-cache-2", "name": "embed_query",  "type": "generation", "duration_ms": 115.0},
+    {"id": "o-cache-2-lookup", "trace_id": "trace-cache-2", "name": "cache_lookup", "type": "span",       "duration_ms": 28.0},
+
+    {"id": "o-rag-1-embed",  "trace_id": "trace-rag-1", "name": "embed_query", "type": "generation", "duration_ms": 108.0},
+    {"id": "o-rag-1-rerank", "trace_id": "trace-rag-1", "name": "rerank",      "type": "generation", "duration_ms": 310.0},
+    {"id": "o-rag-1-llm",    "trace_id": "trace-rag-1", "name": "ChatNVIDIA",  "type": "generation", "duration_ms": 4880.0},
+
+    {"id": "o-rag-2-embed",  "trace_id": "trace-rag-2", "name": "embed_query", "type": "generation", "duration_ms": 132.0},
+    {"id": "o-rag-2-rerank", "trace_id": "trace-rag-2", "name": "rerank",      "type": "generation", "duration_ms": 425.0},
+    {"id": "o-rag-2-llm",    "trace_id": "trace-rag-2", "name": "ChatNVIDIA",  "type": "generation", "duration_ms": 8170.0},
+
+    {"id": "o-rag-3-embed",  "trace_id": "trace-rag-3", "name": "embed_query", "type": "generation", "duration_ms": 148.0},
+    {"id": "o-rag-3-rerank", "trace_id": "trace-rag-3", "name": "rerank",      "type": "generation", "duration_ms": 502.0},
+    {"id": "o-rag-3-llm",    "trace_id": "trace-rag-3", "name": "ChatNVIDIA",  "type": "generation", "duration_ms": 21810.0}
+  ]
+}
