@@ -7,6 +7,7 @@ from src.utils.config import NVIDIA_API_KEY, RERANK_MODEL
 from src.utils.errors import RerankError
 from src.utils.observability import observe, update_current_generation
 from src.utils.services.logger_config import logger
+from src.utils.services.retry import call_with_retry
 
 
 class NVidiaReranker:
@@ -48,8 +49,11 @@ class NVidiaReranker:
 
         try:
             logger.info("Reranking the retrieved chunks via NVIDIARerank")
-            reranked_docs = self.reranker.compress_documents(
-                documents=documents, query=question
+            reranked_docs = call_with_retry(
+                lambda: self.reranker.compress_documents(
+                    documents=documents, query=question
+                ),
+                op_name="rerank",
             )
         except Exception as e:
             logger.exception("Error calling NVIDIA rerank via LangChain: %s", e)
