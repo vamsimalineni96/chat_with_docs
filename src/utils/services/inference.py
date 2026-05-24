@@ -10,6 +10,7 @@ from src.utils import config
 from src.utils.errors import InferenceError
 from src.utils.observability import langfuse_callback
 from src.utils.services.logger_config import logger
+from src.utils.services.retry import call_with_retry
 
 
 class NIMClient:
@@ -61,17 +62,25 @@ class NIMClient:
         return cfg
 
     def chat_completion(self, history_text: str, question: str, context: str) -> str:
-        """Invoke the answer chain and return plain prose."""
+        """Invoke the answer chain and return plain prose.
+
+        The NVIDIA invoke is wrapped in `call_with_retry` so a transient
+        502/503 from the upstream load balancer no longer fails the whole
+        request — same pattern as the ingest path's `_add_texts_with_retry`.
+        """
         cb = langfuse_callback()
         chain_config = {"callbacks": [cb]} if cb else {}
         try:
-            answer = self._chain.invoke(
-                {
-                    "history_text": history_text,
-                    "question": question,
-                    "context": context,
-                },
-                config=chain_config,
+            answer = call_with_retry(
+                lambda: self._chain.invoke(
+                    {
+                        "history_text": history_text,
+                        "question": question,
+                        "context": context,
+                    },
+                    config=chain_config,
+                ),
+                op_name="nim_chat_completion",
             )
         except Exception as e:
             logger.exception("Error during NIM chat completion via LangChain: %s", e)

@@ -6,6 +6,7 @@ from src.utils.config import EMBED_MODEL, NVIDIA_API_KEY
 from src.utils.errors import EmbeddingError
 from src.utils.observability import observe, update_current_generation
 from src.utils.services.logger_config import logger
+from src.utils.services.retry import call_with_retry
 from src.utils.services.tokenizers import count_tokens
 
 
@@ -33,9 +34,15 @@ class EmbeddingHandler:
     def get_embedding(self, text: str, input_type: str = "query") -> list[float]:
         try:
             if input_type == "passage":
-                vector = self.embeddings.embed_documents([text])[0]
+                vector = call_with_retry(
+                    lambda: self.embeddings.embed_documents([text])[0],
+                    op_name="embed_passage",
+                )
             else:
-                vector = self.embeddings.embed_query(text)
+                vector = call_with_retry(
+                    lambda: self.embeddings.embed_query(text),
+                    op_name="embed_query",
+                )
             logger.info("Successfully retrieved embedding of length %d", len(vector))
 
             tokens = count_tokens(text)
@@ -69,7 +76,10 @@ class EmbeddingHandler:
         logger.info("Generated %d text chunks", len(text_chunks))
 
         try:
-            vectors = self.embeddings.embed_documents(text_chunks)
+            vectors = call_with_retry(
+                lambda: self.embeddings.embed_documents(text_chunks),
+                op_name="embed_passage_batch",
+            )
         except Exception as e:
             logger.exception("Failed batch document embedding: %s", e)
             raise EmbeddingError("Failed to embed document chunks.") from e
