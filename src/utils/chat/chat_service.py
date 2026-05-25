@@ -118,9 +118,9 @@ def rag_output(
 
     logger.info("Invoking chat graph to generate answer")
     try:
-        # The graph currently has one node (`rag`) that wraps the original
-        # answer_question() — same inputs, same outputs, same Langfuse spans.
-        # Subsequent PRs (#2 onward) split this into multi-node routing.
+        # The graph orchestrates: retrieve → (rerank → generate | canned_no_retrieval)
+        # → postprocess (heuristics). Each stage is its own @observe'd span in
+        # Langfuse. See src/agents/graph.py for the topology.
         result = get_chat_graph().invoke(
             {
                 "question": payload.question,

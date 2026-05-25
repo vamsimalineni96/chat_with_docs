@@ -1,7 +1,22 @@
+"""RAG pipeline building blocks.
+
+Each major stage (retrieve, rerank, generate) is exposed as a
+top-level `@observe`-decorated function so the LangGraph nodes in
+`src/agents/graph.py` can wire them together. Each one creates the
+clients it needs (NIM, reranker, Milvus) per call — matching the
+previous behavior — and writes its diagnostic data into the optional
+`debug_info` dict when the request was made with `debug=True`.
+
+The previous `answer_question` orchestrator and the LCEL
+`build_generation_chain` are gone; their work now lives in the
+LangGraph state machine. The pure helpers (`build_context`,
+`format_history_for_prompt`, the inner hybrid-retrieve call) stay
+here because they belong to the RAG pipeline regardless of how it's
+orchestrated.
+"""
+
 import time
 from typing import Any
-
-from langchain_core.runnables import RunnableLambda
 
 from src.utils import config
 from src.utils.errors import InferenceError
@@ -11,6 +26,14 @@ from src.utils.services.heuristics import evaluate_heuristics
 from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
+
+# Surfaced to the caller (and the graph) when retrieval returns
+# nothing. Module constant rather than inline string so tests and
+# downstream tooling can pin against it.
+CANNED_NO_RETRIEVAL_ANSWER = (
+    "I couldn't find anything in the indexed document that touches on that. "
+    "Could you try rephrasing, or asking about a different topic from the book?"
+)
 
 
 def build_context(chunks: list[dict[str, Any]]) -> str:
@@ -71,105 +94,28 @@ def _retrieve_for_query(
     return results
 
 
-def build_generation_chain(reranker: NVidiaReranker, llm: NIMClient):
-    """
-    LCEL sub-chain that runs *after* retrieval:
-      input: {question, retrieved, history, _timings, _debug?}
-      rerank -> slice top_k -> assemble (context + history_text) -> chat completion
-    """
-
-    def rerank(payload: dict[str, Any]) -> dict[str, Any]:
-        retrieved = payload["retrieved"]
-        reranked = reranker.execute(question=payload["question"], retrieved_chunks=retrieved)
-        # Slice down to TOP_K for the LLM context.
-        sliced = reranked[: config.TOP_K]
-        debug = payload.get("_debug")
-        if debug is not None:
-            debug["reranked_chunks"] = reranked
-            debug["reranked_top_k"] = sliced
-        return {**payload, "reranked": sliced}
-
-    def assemble(payload: dict[str, Any]) -> dict[str, Any]:
-        context = build_context(payload["reranked"])
-        history_text = payload.get("history_text") or format_history_for_prompt(
-            payload["history"], max_turns=config.HISTORY_MAX_TURNS
-        )
-        debug = payload.get("_debug")
-        if debug is not None:
-            debug["history_text"] = history_text
-        return {**payload, "context": context, "history_text": history_text}
-
-    def generate(payload: dict[str, Any]) -> str:
-        timings = payload["_timings"]
-        debug = payload.get("_debug")
-        if debug is not None:
-            try:
-                rendered = llm._prompt.format_messages(
-                    history_text=payload["history_text"],
-                    question=payload["question"],
-                    context=payload["context"],
-                )
-                debug["rendered_prompt"] = [
-                    {"role": getattr(m, "type", "unknown"), "content": m.content}
-                    for m in rendered
-                ]
-            except Exception as e:
-                logger.warning("Failed to capture rendered prompt for debug: %s", e)
-                debug["rendered_prompt"] = []
-
-        timings["t_llm_start"] = time.perf_counter()
-        answer = llm.chat_completion(
-            history_text=payload["history_text"],
-            question=payload["question"],
-            context=payload["context"],
-        )
-        timings["t_llm_end"] = time.perf_counter()
-        return answer
-
-    return (
-        RunnableLambda(rerank)
-        | RunnableLambda(assemble)
-        | RunnableLambda(generate)
-    )
-
-
-@observe(name="answer_question")
-def answer_question(
+@observe(name="retrieve")
+def retrieve_chunks(
     question: str,
-    query_vec: list[float],
     collection_name: str,
-    history: list[dict],
-    debug: bool = False,
+    *,
+    debug_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """
-    Main RAG orchestration.
+    """Stage 1 — hybrid retrieval, plus dense/sparse diagnostics in debug mode.
 
-    Pipeline:
-      1. Hybrid (dense + BM25) retrieval for the original question, RETRIEVE_K chunks.
-      2. Rerank chunks against the question.
-      3. Slice to TOP_K and assemble prompt.
-      4. Call the LLM.
-
-    Returns a dict with answer, stage timings, and (when debug=True) intermediate
-    artifacts.
-
-    Raises:
-        InferenceError: for retrieval/rerank/LLM failures.
+    Returns a dict the caller (graph node) merges into state:
+      retrieved          : list of chunk dicts (may be empty)
+      t_milvus_start/end : wall-clock timings for the LLM latency dashboard
     """
     milvus_store = MilvusStoreHandler(collection_name=collection_name)
-    nim_client = NIMClient()
-    nim_reranker = NVidiaReranker()
-
-    debug_info: dict[str, Any] | None = {} if debug else None
-    history_text = format_history_for_prompt(history, max_turns=config.HISTORY_MAX_TURNS)
 
     logger.info("Retrieving context from Milvus DB (hybrid dense + BM25)")
     try:
-        t_milvus_start = time.perf_counter()
+        t_start = time.perf_counter()
         retrieved = _retrieve_for_query(
             milvus_store, question, top_k=config.RETRIEVE_K
         )
-        t_milvus_end = time.perf_counter()
+        t_end = time.perf_counter()
     except Exception as e:
         logger.exception("Failed to retrieve context from Milvus: %s", e)
         raise InferenceError("Failed to retrieve context from Milvus.") from e
@@ -193,53 +139,101 @@ def answer_question(
             logger.warning("Sparse-only diagnostic search failed (non-fatal): %s", e)
             debug_info["sparse_only_chunks"] = []
 
-    if not retrieved:
-        logger.info("No relevant context found in the vector store.")
-        canned_answer = (
-            "I couldn't find anything in the indexed document that touches on that. "
-            "Could you try rephrasing, or asking about a different topic from the book?"
-        )
-        # Even the canned no-context path runs through heuristics so we
-        # don't have a silent gap in trace tagging — the refusal check
-        # will (correctly) flag this response as a refusal.
-        heuristics_report = _compute_heuristics(
-            canned_answer, retrieved_chunks=[], debug_info=debug_info
-        )
-        return {
-            "answer": canned_answer,
-            "t_milvus_start": t_milvus_start,
-            "t_milvus_end": t_milvus_end,
-            "t_llm_start": t_milvus_start,
-            "t_llm_end": t_milvus_end,
-            "debug": debug_info,
-            "heuristics": heuristics_report,
-        }
-
-    chain = build_generation_chain(nim_reranker, nim_client)
-    timings: dict[str, float] = {}
-    chain_input: dict[str, Any] = {
-        "question": question,
+    return {
         "retrieved": retrieved,
-        "history": history,
-        "history_text": history_text,
-        "_timings": timings,
+        "t_milvus_start": t_start,
+        "t_milvus_end": t_end,
     }
-    if debug_info is not None:
-        chain_input["_debug"] = debug_info
 
+
+@observe(name="rerank")
+def rerank_chunks(
+    question: str,
+    retrieved: list[dict[str, Any]],
+    *,
+    debug_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stage 2 — rerank against the question, slice down to TOP_K.
+
+    Returns:
+      top_chunks       : the TOP_K-sliced reranked chunks (LLM context)
+      t_rerank_start/end
+    """
+    reranker = NVidiaReranker()
     try:
-        logger.info("Invoking generation chain (rerank -> prompt -> LLM)")
-        answer = chain.invoke(chain_input)
+        t_start = time.perf_counter()
+        reranked = reranker.execute(question=question, retrieved_chunks=retrieved)
+        t_end = time.perf_counter()
     except InferenceError:
         raise
     except Exception as e:
-        logger.exception("Unexpected error from generation chain: %s", e)
-        raise InferenceError("Unexpected error from generation chain.") from e
+        logger.exception("Unexpected error during rerank: %s", e)
+        raise InferenceError("Unexpected error during rerank.") from e
 
-    t_llm_start = timings.get("t_llm_start", t_milvus_end)
-    t_llm_end = timings.get("t_llm_end", t_llm_start)
+    sliced = reranked[: config.TOP_K]
+    if debug_info is not None:
+        debug_info["reranked_chunks"] = reranked
+        debug_info["reranked_top_k"] = sliced
 
-    if config.TOGGLE_CACHE and not debug:
+    return {
+        "top_chunks": sliced,
+        "t_rerank_start": t_start,
+        "t_rerank_end": t_end,
+    }
+
+
+@observe(name="generate")
+def generate_answer(
+    question: str,
+    retrieved: list[dict[str, Any]],
+    top_chunks: list[dict[str, Any]],
+    history: list[dict[str, Any]],
+    query_vec: list[float],
+    *,
+    debug_info: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Stage 3 — assemble prompt, invoke LLM, write cache.
+
+    Cache write is skipped when `debug_info is not None` (i.e. in
+    debug mode) to avoid polluting the cache with intermediate
+    inspection runs. Uses the pre-rerank `retrieved` chunk ids for
+    cache metadata (matching pre-LangGraph behavior).
+    """
+    llm = NIMClient()
+    history_text = format_history_for_prompt(history, max_turns=config.HISTORY_MAX_TURNS)
+    context = build_context(top_chunks)
+
+    if debug_info is not None:
+        debug_info["history_text"] = history_text
+        try:
+            rendered = llm._prompt.format_messages(
+                history_text=history_text,
+                question=question,
+                context=context,
+            )
+            debug_info["rendered_prompt"] = [
+                {"role": getattr(m, "type", "unknown"), "content": m.content}
+                for m in rendered
+            ]
+        except Exception as e:
+            logger.warning("Failed to capture rendered prompt for debug: %s", e)
+            debug_info["rendered_prompt"] = []
+
+    try:
+        t_start = time.perf_counter()
+        answer = llm.chat_completion(
+            history_text=history_text,
+            question=question,
+            context=context,
+        )
+        t_end = time.perf_counter()
+    except InferenceError:
+        raise
+    except Exception as e:
+        logger.exception("Unexpected error during generation: %s", e)
+        raise InferenceError("Unexpected error during generation.") from e
+
+    if config.TOGGLE_CACHE and debug_info is None:
         try:
             context_chunk_ids = [item.get("id") for item in retrieved if item.get("id")]
             get_cache_store().put_entry(
@@ -256,22 +250,14 @@ def answer_question(
         except Exception as e:
             logger.exception("Cache write failed (non-fatal): %s", e)
 
-    heuristics_report = _compute_heuristics(
-        answer, retrieved_chunks=retrieved, debug_info=debug_info
-    )
-
     return {
         "answer": answer,
-        "t_milvus_start": t_milvus_start,
-        "t_milvus_end": t_milvus_end,
-        "t_llm_start": t_llm_start,
-        "t_llm_end": t_llm_end,
-        "debug": debug_info,
-        "heuristics": heuristics_report,
+        "t_llm_start": t_start,
+        "t_llm_end": t_end,
     }
 
 
-def _compute_heuristics(
+def compute_heuristics_for_answer(
     answer: str,
     *,
     retrieved_chunks: list[dict[str, Any]],
@@ -279,15 +265,10 @@ def _compute_heuristics(
 ) -> dict[str, Any] | None:
     """Evaluate heuristics on `answer` and return the report as a dict.
 
-    The caller (chat_service.rag_output) tags the Langfuse trace from
-    the trace-root span — calling update_current_trace from inside this
-    @observe-decorated child function tags the child observation
-    instead of the trace, which is invisible in the trace-level tag
-    view. Returning the report shifts the tagging responsibility one
-    level up where the trace root lives.
-
-    Also writes into `debug_info` (when present) so the eval harness's
-    debug payload still surfaces the heuristic result.
+    The graph's postprocess node calls this. Tagging the Langfuse
+    trace from a child observation tags the child instead of the
+    trace root — so this function returns the report and the trace
+    root (`chat_service.rag_output`) does the actual tagging.
 
     Failures never propagate — heuristics are observability, not
     enforcement. A broken regex must not break the request path.
