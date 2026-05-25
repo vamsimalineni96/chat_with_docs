@@ -1,4 +1,4 @@
-# BTX-BPD-Bodycam-Search
+# Doc RAG
 
 RAG over a document corpus, built as the search/summarization backbone. The current `pdfs/` corpus is a placeholder (Harry Potter books 4 and 7) used to validate the pipeline end-to-end; swap in the real documents to point the system at bodycam transcripts.
 
