@@ -33,7 +33,12 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from src.utils.rag_pipeline import answer_question
+# `answer_question` is imported lazily inside `build_chat_graph` because
+# it pulls in the langchain stack (NVIDIA endpoints, Milvus, …). The
+# unit-test CI install line is deliberately minimal — tests pass a stub
+# `rag_fn` and never need the real implementation. Production callers
+# (chat_service.rag_output → get_chat_graph) trigger the import once on
+# first use, by which point langchain is installed.
 
 
 class ChatGraphState(TypedDict, total=False):
@@ -95,13 +100,21 @@ def _make_rag_node(rag_fn: RagCallable):
     return _run_rag
 
 
-def build_chat_graph(rag_fn: RagCallable = answer_question) -> CompiledStateGraph:
+def build_chat_graph(rag_fn: RagCallable | None = None) -> CompiledStateGraph:
     """Construct and compile the chat graph.
 
     Public-but-rarely-called: production code goes through
     `get_chat_graph()` which caches the compiled instance. Tests call
     this directly so they can pass `rag_fn=stub`.
+
+    When `rag_fn` is None we import the real `answer_question` lazily
+    — see the module docstring for the rationale (CI test deps are
+    minimal and don't carry the langchain stack).
     """
+    if rag_fn is None:
+        from src.utils.rag_pipeline import answer_question  # noqa: PLC0415
+
+        rag_fn = answer_question
     g: StateGraph = StateGraph(ChatGraphState)
     g.add_node("rag", _make_rag_node(rag_fn))
     g.set_entry_point("rag")
