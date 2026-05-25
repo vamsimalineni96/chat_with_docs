@@ -2,44 +2,45 @@
 
 Graph topology:
 
-         START
-           │
-           ▼
-       retrieve
-           │
-       ┌───┴───┐  (conditional edge: did we get any chunks?)
-       │       │
-       ▼       ▼
-   rerank    canned_no_retrieval
-       │       │
-       ▼       │
-   generate    │
-       │       │
-       └───┬───┘
-           ▼
-       postprocess (heuristics)
-           │
-           ▼
-          END
+           START
+             │
+             ▼
+       classify_intent      (LLM-driven router)
+             │
+        ┌────┴────┐         (conditional: in_corpus vs out_of_scope)
+        │         │
+        ▼         ▼
+    retrieve   canned_out_of_scope
+        │             │
+     ┌──┴──┐          │   (conditional: any chunks?)
+     │     │          │
+     ▼     ▼          │
+  rerank  canned_no_retrieval
+     │       │        │
+     ▼       │        │
+  generate   │        │
+     │       │        │
+     └───┬───┴────────┘
+         ▼
+     postprocess (heuristics)
+         │
+         ▼
+        END
 
-Why these splits:
+The classifier in front of `retrieve` is the first "agent" decision:
+- `in_corpus`    → run RAG normally
+- `out_of_scope` → short-circuit before burning Milvus + rerank + LLM
 
-- Each node maps to one observable stage in the Langfuse trace tree —
-  pre-LangGraph everything nested inside a single `answer_question`
-  span; now `retrieve`, `rerank`, and `generate` are siblings under
-  `rag_output`. Easier to slice timings, latencies, and errors by
-  stage in dashboards.
-- The conditional after `retrieve` lets us short-circuit to a canned
-  refusal *without* burning a rerank + LLM call when Milvus returned
-  nothing. That used to be an `if not retrieved: return` inside
-  `answer_question`; it's now a routing decision.
-- `postprocess` runs the heuristic checks on both paths so every
-  answer that leaves the graph carries a heuristic report.
+The second conditional (after `retrieve`) handles the case where the
+classifier let a question through but Milvus returned nothing
+anyway — same canned-no-retrieval path as before.
 
-Each default node implementation is imported lazily so the test CI
-install line (no langchain stack) can still load this module and
-exercise the graph with stubs. The same pattern as PR #1 — see
-`build_chat_graph`.
+`postprocess` runs heuristics on all three terminal paths so every
+answer carries a heuristic report.
+
+Each default node lazy-imports its langchain-dependent
+implementation. Tests pass per-node stubs through `build_chat_graph`
+to short-circuit any subset of nodes.
 """
 
 from __future__ import annotations
@@ -60,6 +61,17 @@ CANNED_NO_RETRIEVAL_ANSWER = (
     "Could you try rephrasing, or asking about a different topic from the book?"
 )
 
+# Surfaced when the classifier decides the question is outside the
+# corpus domain. Phrased to invite a retry / upload rather than just
+# slamming the door — the classifier can be wrong, and we don't want
+# the user to think the bot is broken.
+CANNED_OUT_OF_SCOPE_ANSWER = (
+    "That question looks like it's outside the scope of the documents "
+    "I've been given. I can only answer things grounded in the indexed "
+    "material — try rephrasing in that direction, or upload a document "
+    "that covers the topic."
+)
+
 
 class ChatGraphState(TypedDict, total=False):
     """State threaded through every node.
@@ -78,6 +90,10 @@ class ChatGraphState(TypedDict, total=False):
 
     # --- shared / accumulated debug payload --------------------------------
     debug_info: dict[str, Any] | None
+
+    # --- written by classify_intent ---------------------------------------
+    intent: str  # one of intent_classifier.VALID_INTENTS
+    intent_reasoning: str
 
     # --- written by retrieve ----------------------------------------------
     retrieved: list[dict[str, Any]]
@@ -112,6 +128,16 @@ NodeFn = Callable[[ChatGraphState], dict[str, Any]]
 # shared `debug_info` dict on the first node that runs so subsequent
 # nodes can write into it.
 # ---------------------------------------------------------------------------
+
+
+def _default_classify_intent_node(state: ChatGraphState) -> dict[str, Any]:
+    from src.agents.intent_classifier import classify_intent  # noqa: PLC0415
+
+    result = classify_intent(state["question"])
+    return {
+        "intent": result.intent,
+        "intent_reasoning": result.reasoning,
+    }
 
 
 def _default_retrieve_node(state: ChatGraphState) -> dict[str, Any]:
@@ -187,6 +213,28 @@ def _default_canned_no_retrieval_node(state: ChatGraphState) -> dict[str, Any]:
     }
 
 
+def _default_canned_out_of_scope_node(state: ChatGraphState) -> dict[str, Any]:
+    """Short-circuit path when the classifier flags the question as
+    outside the corpus domain.
+
+    Like canned_no_retrieval, this node is self-contained — no
+    imports — so the path is loadable in the minimal CI test env.
+    Timing fields are stamped to 0 since neither Milvus nor the
+    generator LLM was touched; chat_service's metrics log will just
+    show this branch as effectively instant.
+    """
+    return {
+        "answer": CANNED_OUT_OF_SCOPE_ANSWER,
+        "t_milvus_start": 0.0,
+        "t_milvus_end": 0.0,
+        "t_llm_start": 0.0,
+        "t_llm_end": 0.0,
+        # Postprocess reads `retrieved` for the citation heuristic; keep
+        # the field present-but-empty so it doesn't KeyError.
+        "retrieved": [],
+    }
+
+
 def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
     from src.utils.rag_pipeline import compute_heuristics_for_answer  # noqa: PLC0415
 
@@ -207,6 +255,19 @@ def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _route_after_classify(state: ChatGraphState) -> str:
+    """First conditional in the graph — drives the agentic routing.
+
+    Anything other than the explicit "out_of_scope" verdict falls through
+    to RAG. That's a deliberate safety bias: a false-positive on
+    out_of_scope refuses a legitimate question, whereas a false-positive
+    on in_corpus just wastes a retrieval. The classifier's own fallback
+    on failure is also `in_corpus`, so this branch's default is doubly
+    safe.
+    """
+    return "out_of_scope" if state.get("intent") == "out_of_scope" else "continue"
+
+
 def _route_after_retrieve(state: ChatGraphState) -> str:
     """Either continue down the LLM path, or short-circuit to the canned reply."""
     return "continue" if state.get("retrieved") else "abort"
@@ -219,20 +280,25 @@ def _route_after_retrieve(state: ChatGraphState) -> str:
 
 def build_chat_graph(
     *,
+    classify_intent_fn: NodeFn | None = None,
     retrieve_fn: NodeFn | None = None,
     rerank_fn: NodeFn | None = None,
     generate_fn: NodeFn | None = None,
     canned_no_retrieval_fn: NodeFn | None = None,
+    canned_out_of_scope_fn: NodeFn | None = None,
     postprocess_fn: NodeFn | None = None,
 ) -> CompiledStateGraph:
     """Build and compile the chat graph.
 
     Each node has an optional injection point for tests — pass a stub
     callable for any node you want to short-circuit. Defaults wire up
-    to the real `rag_pipeline` functions (imported lazily inside each
-    default to keep the test CI install line minimal).
+    to the real implementations (imported lazily inside each default
+    to keep the test CI install line minimal).
     """
     g: StateGraph = StateGraph(ChatGraphState)
+    g.add_node(
+        "classify_intent", classify_intent_fn or _default_classify_intent_node
+    )
     g.add_node("retrieve", retrieve_fn or _default_retrieve_node)
     g.add_node("rerank", rerank_fn or _default_rerank_node)
     g.add_node("generate", generate_fn or _default_generate_node)
@@ -240,9 +306,18 @@ def build_chat_graph(
         "canned_no_retrieval",
         canned_no_retrieval_fn or _default_canned_no_retrieval_node,
     )
+    g.add_node(
+        "canned_out_of_scope",
+        canned_out_of_scope_fn or _default_canned_out_of_scope_node,
+    )
     g.add_node("postprocess", postprocess_fn or _default_postprocess_node)
 
-    g.set_entry_point("retrieve")
+    g.set_entry_point("classify_intent")
+    g.add_conditional_edges(
+        "classify_intent",
+        _route_after_classify,
+        {"continue": "retrieve", "out_of_scope": "canned_out_of_scope"},
+    )
     g.add_conditional_edges(
         "retrieve",
         _route_after_retrieve,
@@ -251,6 +326,7 @@ def build_chat_graph(
     g.add_edge("rerank", "generate")
     g.add_edge("generate", "postprocess")
     g.add_edge("canned_no_retrieval", "postprocess")
+    g.add_edge("canned_out_of_scope", "postprocess")
     g.add_edge("postprocess", END)
 
     return g.compile()

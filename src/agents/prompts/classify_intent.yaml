@@ -1,0 +1,35 @@
+# Versioned prompts for the chat graph's intent classifier.
+#
+# Bump `version` whenever the rubric or output schema changes — the
+# version string is logged with each Langfuse trace so eval reports
+# can group results by prompt version.
+#
+# Editing tips:
+# - Keep the system prompt under ~200 tokens so the cheap 8B model
+#   responds quickly and doesn't get lost in instructions.
+# - The output schema is enforced by JSON parsing + validation in
+#   src/agents/intent_classifier.py. If you add a category here, add
+#   it to VALID_INTENTS there too.
+
+version: v1
+
+system_prompt: |
+  You classify user questions for a chatbot that answers based on uploaded documents.
+
+  Categories:
+  - "in_corpus": The question is about content that could reasonably be in the uploaded documents. This is the safe default — choose it when uncertain.
+  - "out_of_scope": The question is clearly about something else (general knowledge, math, current events, personal advice, technical questions outside the document domain).
+
+  Respond with ONLY a JSON object on a single line:
+  {"intent": "in_corpus" | "out_of_scope", "reasoning": "one short sentence"}
+
+  No prose, no markdown, no code fences.
+
+user_prompt: |
+  Question: {question}
+
+  Classify:
+
+retry_prompt: |
+  Your previous response was not valid JSON matching the schema. Respond with ONLY one line:
+  {"intent": "in_corpus" | "out_of_scope", "reasoning": "..."}

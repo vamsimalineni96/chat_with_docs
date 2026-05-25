@@ -144,23 +144,33 @@ def rag_output(
     t_llm_end = result["t_llm_end"]
     debug_info = result.get("debug_info")
 
-    # Heuristics evaluation is computed in the RAG pipeline; tagging
-    # happens *here* because this is the trace-root span. Tagging from
-    # inside answer_question (a child observation) attaches the tag to
-    # the child instead of bubbling up to the trace, making it
-    # invisible in the Langfuse trace-level tag view.
+    # Trace-root tagging: the @observe(name="rag_output") span is the
+    # trace root, so update_current_trace from here lands at the trace
+    # level (where Langfuse's tag filter looks). Tagging from inside a
+    # child observation tags the child instead — see PR #44 history.
+    # We batch the heuristic + intent tags into one call.
+    trace_tags: list[str] = []
+
+    intent = result.get("intent")
+    if intent:
+        trace_tags.append(f"intent:{intent}")
+
     heuristics_report = result.get("heuristics")
     if heuristics_report is not None:
-        tags = [f"heuristic_pass:{str(heuristics_report['overall_passed']).lower()}"]
+        trace_tags.append(
+            f"heuristic_pass:{str(heuristics_report['overall_passed']).lower()}"
+        )
         if not heuristics_report["overall_passed"]:
-            tags.append(
+            trace_tags.append(
                 "heuristic_failed:" + ",".join(heuristics_report["failed_checks"])
             )
+
+    if trace_tags:
         try:
-            update_current_trace(tags=tags)
+            update_current_trace(tags=trace_tags)
         except Exception as e:
             logger.debug(
-                "update_current_trace from heuristics tagging failed (non-fatal): %s",
+                "update_current_trace from chat_service tagging failed (non-fatal): %s",
                 e,
             )
 
