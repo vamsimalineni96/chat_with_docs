@@ -5,6 +5,8 @@ langchain-nvidia-ai-endpoints==0.3.19
 langchain-milvus==0.2.1
 langchain_text_splitters==0.3.11
 langgraph==0.4.10
+langchain-mcp-adapters==0.1.14
+mcp==1.27.1
 uvicorn==0.35.0
 chromadb==1.0.20
 fastapi==0.116.1
