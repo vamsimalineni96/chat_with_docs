@@ -25,7 +25,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from src.agents.graph import ChatGraphState, build_chat_graph
+from src.agents.graph import (
+    CANNED_NO_RETRIEVAL_ANSWER,
+    ChatGraphState,
+    build_chat_graph,
+)
 
 # ---------------------------------------------------------------------------
 # Stub nodes
@@ -155,12 +159,11 @@ def test_node_execution_order():
 def test_empty_retrieval_routes_to_canned_path():
     """No chunks → skip rerank + generate, go through canned_no_retrieval.
 
-    The canned answer must come from the real CANNED_NO_RETRIEVAL_ANSWER
-    constant in rag_pipeline.py — we don't stub canned_no_retrieval so
-    the default fires.
+    We don't stub canned_no_retrieval so the default fires; the answer
+    must match the CANNED_NO_RETRIEVAL_ANSWER constant from graph.py
+    (deliberately kept in graph.py so the canned path doesn't pull in
+    rag_pipeline's langchain imports — see PR comments).
     """
-    from src.utils.rag_pipeline import CANNED_NO_RETRIEVAL_ANSWER
-
     rerank_called: list[bool] = []
     generate_called: list[bool] = []
 

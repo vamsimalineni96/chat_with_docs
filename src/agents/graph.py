@@ -50,6 +50,16 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+# Surfaced to the caller when retrieval returns nothing. Defined here
+# (rather than in rag_pipeline) so the canned-path node doesn't have
+# to import rag_pipeline, which in turn pulls in the langchain stack
+# — important for keeping this module loadable in the minimal CI
+# test env.
+CANNED_NO_RETRIEVAL_ANSWER = (
+    "I couldn't find anything in the indexed document that touches on that. "
+    "Could you try rephrasing, or asking about a different topic from the book?"
+)
+
 
 class ChatGraphState(TypedDict, total=False):
     """State threaded through every node.
@@ -163,9 +173,11 @@ def _default_canned_no_retrieval_node(state: ChatGraphState) -> dict[str, Any]:
     metrics log doesn't have to special-case this branch. The refusal
     heuristic in postprocess will (correctly) flag this response as a
     refusal — that's the intended trace signal.
-    """
-    from src.utils.rag_pipeline import CANNED_NO_RETRIEVAL_ANSWER  # noqa: PLC0415
 
+    Note: this node intentionally does NOT import from rag_pipeline.
+    Keeping it self-contained means the canned path is loadable in
+    the minimal CI test env without the langchain stack.
+    """
     t_milvus_end = state.get("t_milvus_end", 0.0)
     t_milvus_start = state.get("t_milvus_start", t_milvus_end)
     return {

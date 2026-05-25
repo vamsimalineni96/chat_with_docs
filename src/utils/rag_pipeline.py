@@ -27,14 +27,6 @@ from src.utils.services.inference import NIMClient
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 
-# Surfaced to the caller (and the graph) when retrieval returns
-# nothing. Module constant rather than inline string so tests and
-# downstream tooling can pin against it.
-CANNED_NO_RETRIEVAL_ANSWER = (
-    "I couldn't find anything in the indexed document that touches on that. "
-    "Could you try rephrasing, or asking about a different topic from the book?"
-)
-
 
 def build_context(chunks: list[dict[str, Any]]) -> str:
     parts: list[str] = []
