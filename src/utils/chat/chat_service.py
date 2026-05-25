@@ -1,9 +1,9 @@
 import time
 
+from src.agents.graph import get_chat_graph
 from src.utils import config
 from src.utils.errors import CacheError, ConversationServiceError, InferenceError
 from src.utils.observability import observe, update_current_trace
-from src.utils.rag_pipeline import answer_question
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import get_cache_store
@@ -116,28 +116,33 @@ def rag_output(
         logger.exception("Unexpected error while storing user message: %s", e)
         raise ConversationServiceError("Failed to store user message.") from e
 
-    logger.info("Running RAG pipeline to generate answer")
+    logger.info("Invoking chat graph to generate answer")
     try:
-        result = answer_question(
-            question=payload.question,
-            query_vec=query_vec,
-            collection_name=payload.collection_name,
-            history=history_for_llm,
-            debug=getattr(payload, "debug", False),
+        # The graph currently has one node (`rag`) that wraps the original
+        # answer_question() — same inputs, same outputs, same Langfuse spans.
+        # Subsequent PRs (#2 onward) split this into multi-node routing.
+        result = get_chat_graph().invoke(
+            {
+                "question": payload.question,
+                "query_vec": query_vec,
+                "collection_name": payload.collection_name,
+                "history": history_for_llm,
+                "debug_flag": getattr(payload, "debug", False),
+            }
         )
     except InferenceError:
         # Already wrapped appropriately
         raise
     except Exception as e:
-        logger.exception("Unexpected error from RAG pipeline: %s", e)
-        raise InferenceError("Unexpected error from RAG pipeline.") from e
+        logger.exception("Unexpected error from chat graph: %s", e)
+        raise InferenceError("Unexpected error from chat graph.") from e
 
     answer = result["answer"]
     t_milvus_start = result["t_milvus_start"]
     t_milvus_end = result["t_milvus_end"]
     t_llm_start = result["t_llm_start"]
     t_llm_end = result["t_llm_end"]
-    debug_info = result.get("debug")
+    debug_info = result.get("debug_info")
 
     # Heuristics evaluation is computed in the RAG pipeline; tagging
     # happens *here* because this is the trace-root span. Tagging from
