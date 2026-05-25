@@ -72,7 +72,7 @@ jobs:
       # actually needs, rather than the full requirements.txt (which would
       # pull in langchain/milvus/fastapi and slow CI considerably).
       - name: Install test deps
-        run: pip install -r requirements-dev.txt tiktoken==0.7.0 'langfuse>=4.6.1,<5' python-dotenv==1.0.1 pyyaml==6.0.2
+        run: pip install -r requirements-dev.txt tiktoken==0.7.0 'langfuse>=4.6.1,<5' python-dotenv==1.0.1 pyyaml==6.0.2 langgraph==0.4.10
 
       - name: Run pytest
         run: pytest tests/ -v
