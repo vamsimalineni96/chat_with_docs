@@ -156,7 +156,7 @@ async def chat(
         else:
             logger.info("Using RAG to answer the question")
 
-        rag_result = rag_output(
+        rag_result = await rag_output(
             payload, db, conversation, user, query_vec=q_embed
         )
         return ChatResponse(

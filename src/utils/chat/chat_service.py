@@ -54,7 +54,7 @@ def cache_output(payload, q_embed):
 
 
 @observe(name="rag_output")
-def rag_output(
+async def rag_output(
     payload,
     db,
     conversation,
@@ -121,7 +121,7 @@ def rag_output(
         # The graph orchestrates: retrieve → (rerank → generate | canned_no_retrieval)
         # → postprocess (heuristics). Each stage is its own @observe'd span in
         # Langfuse. See src/agents/graph.py for the topology.
-        result = get_chat_graph().invoke(
+        result = await get_chat_graph().ainvoke(
             {
                 "question": payload.question,
                 "query_vec": query_vec,

@@ -46,7 +46,7 @@ to short-circuit any subset of nodes.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -122,8 +122,12 @@ class ChatGraphState(TypedDict, total=False):
 
 
 # Node-function signatures: take the current state, return a partial
-# state dict that LangGraph merges in.
-NodeFn = Callable[[ChatGraphState], dict[str, Any]]
+# state dict that LangGraph merges in. Async nodes are supported —
+# LangGraph handles both when the graph is invoked via `ainvoke`.
+NodeFn = (
+    Callable[[ChatGraphState], dict[str, Any]]
+    | Callable[[ChatGraphState], Awaitable[dict[str, Any]]]
+)
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +246,7 @@ def _default_canned_out_of_scope_node(state: ChatGraphState) -> dict[str, Any]:
     }
 
 
-def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
+async def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
     """Run the MCP ReAct sub-agent on the user's question.
 
     Spawns the wrapped `create_react_agent` (cached at module level
@@ -259,7 +263,7 @@ def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
     """
     from src.agents.tool_node import run_tool_agent  # noqa: PLC0415
 
-    result = run_tool_agent(state["question"])
+    result = await run_tool_agent(state["question"])
     return {
         "answer": result["answer"],
         "tool_calls": result.get("tool_calls", []),
