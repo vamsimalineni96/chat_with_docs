@@ -215,6 +215,40 @@ async def rag_output(
 
     t1 = time.perf_counter()
 
+    # Cache write-back: store this Q/A pair so future identical (or
+    # near-identical) questions return instantly from cache_output.
+    # Guard conditions:
+    #   - cache is enabled globally
+    #   - answer came from RAG (in_corpus), not tool_call/out_of_scope/canned
+    #   - retrieval actually found chunks (canned_no_retrieval path has none)
+    #   - heuristics passed — don't cache a low-quality response
+    if (
+        config.TOGGLE_CACHE
+        and result.get("intent") in (None, "in_corpus")
+        and result.get("retrieved")
+        and heuristics_report is not None
+        and heuristics_report["overall_passed"]
+    ):
+        try:
+            chunk_ids = [
+                c.get("id")
+                for c in (result.get("retrieved") or [])
+                if c.get("id") is not None
+            ]
+            cache_service.put_entry(
+                question_text=payload.question,
+                query_vec=query_vec,
+                answer_text=answer,
+                context_chunk_ids=chunk_ids,
+                model_name=config.LLM_MODEL,
+                prompt_version=config.PROMPT_VERSION,
+            )
+            logger.info("Wrote Q/A pair to cache for conv_id=%s", conversation.id)
+        except CacheError as e:
+            logger.warning("Cache write-back failed (non-fatal): %s", e)
+        except Exception as e:
+            logger.warning("Unexpected error during cache write-back (non-fatal): %s", e)
+
     logger.info(
         "RAG_PIPELINE_METRICS | conv_id=%s | domain=%s | "
         "db_load_ms=%.2f | milvus_ms=%.2f | llm_ms=%.2f | db_save_ms=%.2f | total_ms=%.2f",
