@@ -173,6 +173,10 @@ async def rag_output(
         if name:
             trace_tags.append(f"tool:{name}")
 
+    tool_failure_reason = result.get("tool_failure_reason")
+    if tool_failure_reason:
+        trace_tags.append(f"mcp_failure:{tool_failure_reason}")
+
     heuristics_report = result.get("heuristics")
     if heuristics_report is not None:
         trace_tags.append(

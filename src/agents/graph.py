@@ -118,6 +118,10 @@ class ChatGraphState(TypedDict, total=False):
     # sub-agent invoked. Empty list on the failure path. Surfaced in the
     # chat trace so we can see which MCP tools the agent reached for.
     tool_calls: list[dict[str, Any]]
+    # One of "no_tools" | "no_api_key" | "agent_error" | "no_messages" when
+    # the sub-agent failed; None on success. Surfaced as mcp_failure:<reason>
+    # in Langfuse so you can distinguish MCP server down from API key missing.
+    tool_failure_reason: str | None
 
     # --- written by postprocess -------------------------------------------
     heuristics: dict[str, Any] | None
@@ -278,6 +282,7 @@ async def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
     return {
         "answer": result["answer"],
         "tool_calls": result.get("tool_calls", []),
+        "tool_failure_reason": result.get("tool_failure_reason"),
         "t_milvus_start": 0.0,
         "t_milvus_end": 0.0,
         "t_llm_start": result.get("t_llm_start", 0.0),
