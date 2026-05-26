@@ -171,12 +171,20 @@ async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str
     except Exception as e:
         logger.warning("Tool sub-agent failed: %s", e, exc_info=True)
         t_end = time.perf_counter()
+        error_str = str(e)
+        if "no MCP tools" in error_str:
+            failure_reason = "no_tools"
+        elif "NVIDIA_API_KEY" in error_str:
+            failure_reason = "no_api_key"
+        else:
+            failure_reason = "agent_error"
         return {
             "answer": TOOL_FAILURE_ANSWER,
             "tool_calls": [],
+            "tool_failure_reason": failure_reason,
             "t_llm_start": t_start,
             "t_llm_end": t_end,
-            "error": str(e),
+            "error": error_str,
         }
 
     t_end = time.perf_counter()
@@ -186,6 +194,7 @@ async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str
         return {
             "answer": TOOL_FAILURE_ANSWER,
             "tool_calls": [],
+            "tool_failure_reason": "no_messages",
             "t_llm_start": t_start,
             "t_llm_end": t_end,
             "error": "agent returned empty message list",
@@ -196,6 +205,7 @@ async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str
     return {
         "answer": answer,
         "tool_calls": _extract_tool_calls(messages),
+        "tool_failure_reason": None,
         "t_llm_start": t_start,
         "t_llm_end": t_end,
         "error": None,
