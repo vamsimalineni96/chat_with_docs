@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from src.agents.graph import get_chat_graph
@@ -90,8 +91,9 @@ async def rag_output(
     logger.info("Accessing recent messages from the database")
     try:
         t_db_start = time.perf_counter()
-        recent_msgs = converstion_service.get_recent_messages(
-            db, conversation, limit=config.HISTORY_LIMIT, user=user
+        recent_msgs = await asyncio.to_thread(
+            converstion_service.get_recent_messages,
+            db, conversation, limit=config.HISTORY_LIMIT, user=user,
         )
         history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
     except ConversationServiceError:
@@ -102,7 +104,8 @@ async def rag_output(
 
     logger.info("Storing the new message into the database")
     try:
-        converstion_service.add_message(
+        await asyncio.to_thread(
+            converstion_service.add_message,
             db,
             conversation=conversation,
             user=user,
@@ -189,7 +192,12 @@ async def rag_output(
 
     if trace_tags:
         try:
-            update_current_trace(tags=trace_tags)
+            update_current_trace(
+                tags=trace_tags,
+                metadata={
+                    "intent_reasoning": (result.get("intent_reasoning") or "")[:100]
+                },
+            )
         except Exception as e:
             logger.debug(
                 "update_current_trace from chat_service tagging failed (non-fatal): %s",
@@ -199,7 +207,8 @@ async def rag_output(
     logger.info("Storing the chatbot's reply to the user query")
     try:
         t_save_start = time.perf_counter()
-        converstion_service.add_message(
+        await asyncio.to_thread(
+            converstion_service.add_message,
             db,
             conversation=conversation,
             user=user,
@@ -214,6 +223,40 @@ async def rag_output(
         raise ConversationServiceError("Failed to store assistant message.") from e
 
     t1 = time.perf_counter()
+
+    # Cache write-back: store this Q/A pair so future identical (or
+    # near-identical) questions return instantly from cache_output.
+    # Guard conditions:
+    #   - cache is enabled globally
+    #   - answer came from RAG (in_corpus), not tool_call/out_of_scope/canned
+    #   - retrieval actually found chunks (canned_no_retrieval path has none)
+    #   - heuristics passed — don't cache a low-quality response
+    if (
+        config.TOGGLE_CACHE
+        and result.get("intent") in (None, "in_corpus")
+        and result.get("retrieved")
+        and heuristics_report is not None
+        and heuristics_report["overall_passed"]
+    ):
+        try:
+            chunk_ids = [
+                c.get("id")
+                for c in (result.get("retrieved") or [])
+                if c.get("id") is not None
+            ]
+            cache_service.put_entry(
+                question_text=payload.question,
+                query_vec=query_vec,
+                answer_text=answer,
+                context_chunk_ids=chunk_ids,
+                model_name=config.LLM_MODEL,
+                prompt_version=config.PROMPT_VERSION,
+            )
+            logger.info("Wrote Q/A pair to cache for conv_id=%s", conversation.id)
+        except CacheError as e:
+            logger.warning("Cache write-back failed (non-fatal): %s", e)
+        except Exception as e:
+            logger.warning("Unexpected error during cache write-back (non-fatal): %s", e)
 
     logger.info(
         "RAG_PIPELINE_METRICS | conv_id=%s | domain=%s | "

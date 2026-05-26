@@ -166,11 +166,14 @@ def _default_retrieve_node(state: ChatGraphState) -> dict[str, Any]:
     debug_info: dict[str, Any] | None = (
         {} if state.get("debug_flag") else None
     )
-    result = retrieve_chunks(
-        question=state["question"],
-        collection_name=state["collection_name"],
-        debug_info=debug_info,
-    )
+    try:
+        result = retrieve_chunks(
+            question=state["question"],
+            collection_name=state["collection_name"],
+            debug_info=debug_info,
+        )
+    except Exception as e:
+        raise NodeError("retrieve", e) from e
     return {
         "retrieved": result["retrieved"],
         "t_milvus_start": result["t_milvus_start"],
@@ -278,7 +281,7 @@ async def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
     """
     from src.agents.tool_node import run_tool_agent  # noqa: PLC0415
 
-    result = await run_tool_agent(state["question"])
+    result = await run_tool_agent(state["question"], history=state.get("history", []))
     return {
         "answer": result["answer"],
         "tool_calls": result.get("tool_calls", []),
@@ -298,11 +301,14 @@ def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
     # source — same as the pre-LangGraph behavior — because the citation
     # check just needs SOME context to compare against, and the broader
     # set is more forgiving.
-    report = compute_heuristics_for_answer(
-        state["answer"],
-        retrieved_chunks=state.get("retrieved", []),
-        debug_info=state.get("debug_info"),
-    )
+    try:
+        report = compute_heuristics_for_answer(
+            state["answer"],
+            retrieved_chunks=state.get("retrieved", []),
+            debug_info=state.get("debug_info"),
+        )
+    except Exception as e:
+        raise NodeError("postprocess", e) from e
     return {"heuristics": report}
 
 

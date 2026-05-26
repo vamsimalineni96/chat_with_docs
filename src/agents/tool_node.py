@@ -159,8 +159,19 @@ def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
 
 
 @observe(name="call_mcp_tool")
-async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str, Any]:
+async def run_tool_agent(
+    question: str,
+    *,
+    history: list[dict] | None = None,
+    agent: Any | None = None,
+) -> dict[str, Any]:
     """Run the React agent on `question` and return a node-shaped dict.
+
+    `history` is the prior conversation turns as a list of
+    {"role": "user"|"assistant", "content": str} dicts (same shape as
+    ChatGraphState["history"]). When provided, the turns are prepended to
+    the message list so the ReAct agent can resolve pronouns and follow-up
+    questions ("what's the return policy for *that* order?").
 
     Returns:
         {
@@ -175,12 +186,42 @@ async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str
     "I couldn't help" response to the user via the refusal heuristic.
     `agent=` is the DI seam tests use to inject a fake agent.
     """
-    from langchain_core.messages import HumanMessage  # noqa: PLC0415
+    from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
 
     t_start = time.perf_counter()
     try:
         if agent is None:
             agent = await get_agent()
+
+        # Convert prior turns to LangChain message objects. System messages
+        # are skipped — the ReAct agent already has its own system prompt and
+        # a second one would conflict.
+        history_msgs: list[Any] = []
+        for turn in history or []:
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if role == "user":
+                history_msgs.append(HumanMessage(content=content))
+            elif role == "assistant":
+                history_msgs.append(AIMessage(content=content))
+
+        # Stamp the span input so Langfuse shows the full context that
+        # was handed to the ReAct loop: question, turn count, and each
+        # prior turn (content truncated to 300 chars so the UI stays
+        # readable on long conversations).
+        update_current_observation(
+            input={
+                "question": question,
+                "history_turns": len(history_msgs),
+                "history": [
+                    {
+                        "role": turn.get("role"),
+                        "content": (turn.get("content") or "")[:300],
+                    }
+                    for turn in (history or [])
+                ],
+            }
+        )
 
         # Pass the Langfuse callback into the React agent's invoke so
         # ChatNVIDIA + each MCP tool show up as nested spans under
