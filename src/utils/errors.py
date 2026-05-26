@@ -61,3 +61,15 @@ class ConversationLockError(RedisLockError):
 class RerankError(AppError):
     """Raised when there is an error in reranking"""
     pass
+
+
+class NodeError(AppError):
+    """Raised inside a graph node to carry the stage name to the caller.
+
+    `rag_output` catches this before wrapping in InferenceError so it can
+    tag `failed_stage:<stage>` on the Langfuse trace for filtering.
+    """
+
+    def __init__(self, stage: str, cause: Exception) -> None:
+        super().__init__(f"{stage} node failed: {cause}")
+        self.stage = stage

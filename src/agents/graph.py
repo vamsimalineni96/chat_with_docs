@@ -52,6 +52,8 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from src.utils.errors import NodeError
+
 # Surfaced to the caller when retrieval returns nothing. Defined here
 # (rather than in rag_pipeline) so the canned-path node doesn't have
 # to import rag_pipeline, which in turn pulls in the langchain stack
@@ -144,7 +146,10 @@ NodeFn = (
 def _default_classify_intent_node(state: ChatGraphState) -> dict[str, Any]:
     from src.agents.intent_classifier import classify_intent  # noqa: PLC0415
 
-    result = classify_intent(state["question"])
+    try:
+        result = classify_intent(state["question"])
+    except Exception as e:
+        raise NodeError("classify_intent", e) from e
     return {
         "intent": result.intent,
         "intent_reasoning": result.reasoning,
@@ -173,11 +178,14 @@ def _default_retrieve_node(state: ChatGraphState) -> dict[str, Any]:
 def _default_rerank_node(state: ChatGraphState) -> dict[str, Any]:
     from src.utils.rag_pipeline import rerank_chunks  # noqa: PLC0415
 
-    result = rerank_chunks(
-        question=state["question"],
-        retrieved=state["retrieved"],
-        debug_info=state.get("debug_info"),
-    )
+    try:
+        result = rerank_chunks(
+            question=state["question"],
+            retrieved=state["retrieved"],
+            debug_info=state.get("debug_info"),
+        )
+    except Exception as e:
+        raise NodeError("rerank", e) from e
     return {
         "top_chunks": result["top_chunks"],
         "t_rerank_start": result["t_rerank_start"],
@@ -188,14 +196,17 @@ def _default_rerank_node(state: ChatGraphState) -> dict[str, Any]:
 def _default_generate_node(state: ChatGraphState) -> dict[str, Any]:
     from src.utils.rag_pipeline import generate_answer  # noqa: PLC0415
 
-    result = generate_answer(
-        question=state["question"],
-        retrieved=state["retrieved"],
-        top_chunks=state["top_chunks"],
-        history=state["history"],
-        query_vec=state["query_vec"],
-        debug_info=state.get("debug_info"),
-    )
+    try:
+        result = generate_answer(
+            question=state["question"],
+            retrieved=state["retrieved"],
+            top_chunks=state["top_chunks"],
+            history=state["history"],
+            query_vec=state["query_vec"],
+            debug_info=state.get("debug_info"),
+        )
+    except Exception as e:
+        raise NodeError("generate", e) from e
     return {
         "answer": result["answer"],
         "t_llm_start": result["t_llm_start"],
