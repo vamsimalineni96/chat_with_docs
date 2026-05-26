@@ -2,7 +2,7 @@
 
 `tool_node.run_tool_agent` is the seam tests target. We never build a
 real `create_react_agent` here — the `agent=` DI parameter lets us
-inject a fake whose `.invoke(...)` returns a canned message list, so
+inject a fake whose `.ainvoke(...)` returns a canned message list, so
 no langchain / langgraph.prebuilt / NVIDIA HTTP traffic ever fires.
 
 The wrapper's job is to:
@@ -16,6 +16,7 @@ That's what we pin below.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 
@@ -43,10 +44,6 @@ class _FakeAgent:
     """Mimics the surface of a `create_react_agent` compiled graph:
     `await .ainvoke({"messages": [...]})` returns `{"messages": [...]}`
     where the last message is the synthesized answer.
-
-    Async because the production code calls `agent.ainvoke` (the React
-    agent's async path — see the docstring in `run_tool_agent` for why).
-    `_run_async_blocking` handles the sync-caller bridge.
     """
 
     def __init__(self, messages: list[Any]):
@@ -56,10 +53,8 @@ class _FakeAgent:
     async def ainvoke(
         self, state: dict[str, Any], config: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        # The real React agent's ainvoke accepts an optional RunnableConfig
-        # — production code passes the Langfuse callback through it. We
-        # accept it here for signature parity but don't assert on it,
-        # since these tests target the wrapper's behavior, not tracing.
+        # Accept the optional Langfuse callback config for signature parity
+        # but don't assert on it — these tests target the wrapper, not tracing.
         self.invoke_calls.append(state)
         return {"messages": self._messages}
 
@@ -90,7 +85,9 @@ def test_run_tool_agent_returns_final_message_content():
             _msg(content="Your order ORD-1001 is shipped via FedEx."),
         ]
     )
-    result = tool_node.run_tool_agent("Where is order ORD-1001?", agent=agent)
+    result = asyncio.run(
+        tool_node.run_tool_agent("Where is order ORD-1001?", agent=agent)
+    )
 
     assert result["answer"] == "Your order ORD-1001 is shipped via FedEx."
     assert result["error"] is None
@@ -125,7 +122,7 @@ def test_run_tool_agent_extracts_all_tool_calls():
             _msg(content="In stock; 30-day return window for electronics."),
         ]
     )
-    result = tool_node.run_tool_agent("compound question", agent=agent)
+    result = asyncio.run(tool_node.run_tool_agent("compound question", agent=agent))
     assert result["tool_calls"] == [
         {"name": "check_inventory", "args": {"sku": "SKU-001"}},
         {
@@ -141,7 +138,7 @@ def test_run_tool_agent_forwards_question_as_human_message():
     so a future refactor doesn't silently drop the question.
     """
     agent = _FakeAgent([_msg(content="ok")])
-    tool_node.run_tool_agent("hello tools", agent=agent)
+    asyncio.run(tool_node.run_tool_agent("hello tools", agent=agent))
 
     assert len(agent.invoke_calls) == 1
     sent = agent.invoke_calls[0]["messages"]
@@ -160,7 +157,7 @@ def test_run_tool_agent_returns_canned_answer_on_agent_error():
     apology returned, so the graph's postprocess step always has an
     `answer` to inspect.
     """
-    result = tool_node.run_tool_agent("anything", agent=_RaisingAgent())
+    result = asyncio.run(tool_node.run_tool_agent("anything", agent=_RaisingAgent()))
     assert result["answer"] == tool_node.TOOL_FAILURE_ANSWER
     assert result["tool_calls"] == []
     assert result["error"] is not None
@@ -172,7 +169,7 @@ def test_run_tool_agent_handles_empty_message_list():
     same failure shape as a raised exception.
     """
     agent = _FakeAgent([])
-    result = tool_node.run_tool_agent("anything", agent=agent)
+    result = asyncio.run(tool_node.run_tool_agent("anything", agent=agent))
     assert result["answer"] == tool_node.TOOL_FAILURE_ANSWER
     assert result["tool_calls"] == []
     assert result["error"] is not None
@@ -186,11 +183,11 @@ def test_run_tool_agent_falls_back_when_build_agent_fails(monkeypatch):
     a fresh attempt).
     """
 
-    def _boom(model):
+    async def _boom(model):
         raise RuntimeError("NVIDIA_API_KEY not set")
 
     monkeypatch.setattr(tool_node, "_build_agent", _boom)
-    result = tool_node.run_tool_agent("anything")
+    result = asyncio.run(tool_node.run_tool_agent("anything"))
     assert result["answer"] == tool_node.TOOL_FAILURE_ANSWER
     assert "NVIDIA_API_KEY" in result["error"]
     # Cache was not populated by the failed build → reset_cache is a no-op.
@@ -208,12 +205,12 @@ def test_get_agent_caches_after_first_build(monkeypatch):
     """
     build_count = {"n": 0}
 
-    def _fake_build(model):
+    async def _fake_build(model):
         build_count["n"] += 1
         return _FakeAgent([_msg(content="cached")])
 
     monkeypatch.setattr(tool_node, "_build_agent", _fake_build)
-    tool_node.get_agent()
-    tool_node.get_agent()
-    tool_node.get_agent()
+    asyncio.run(tool_node.get_agent())
+    asyncio.run(tool_node.get_agent())
+    asyncio.run(tool_node.get_agent())
     assert build_count["n"] == 1

@@ -5,7 +5,7 @@ This module wraps `langgraph.prebuilt.create_react_agent` over the
 MCP tools discovered by `src.agents.mcp_client`. The ReAct loop
 itself does the work: the LLM sees the discovered tools, decides
 which one(s) to call, sees the result, and synthesizes a final
-user-facing answer — all in a single `.invoke()`.
+user-facing answer — all in a single `ainvoke`.
 
 Why a sub-graph instead of a single LLM call:
 - Multiple tools per question come for free ("Is SKU-001 in stock
@@ -29,14 +29,13 @@ stack — tests inject a fake agent via the `agent=` parameter.
 
 from __future__ import annotations
 
-import asyncio
-import concurrent.futures
-import contextvars
 import logging
 import os
 import time
 from collections.abc import Callable, Coroutine
 from typing import Any, TypeVar
+
+from src.utils.observability import langfuse_callback, observe
 
 from src.utils.observability import langfuse_callback, observe
 
@@ -114,13 +113,11 @@ TOOL_FAILURE_ANSWER = (
 _cached_agent: Any | None = None
 
 
-def _build_agent(model: str) -> Any:
+async def _build_agent(model: str) -> Any:
     """Construct a fresh React agent bound to the current MCP tools.
 
     Imports are deferred so the test env (which mocks the agent via DI)
-    never needs langchain installed. MCP discovery is async and we may
-    be inside FastAPI's request loop, so we route the discovery through
-    `_run_async_blocking` rather than calling `asyncio.run` directly.
+    never needs langchain installed.
     """
     from langchain_nvidia_ai_endpoints import ChatNVIDIA  # noqa: PLC0415
     from langgraph.prebuilt import create_react_agent  # noqa: PLC0415
@@ -131,7 +128,7 @@ def _build_agent(model: str) -> Any:
     if not api_key:
         raise RuntimeError("NVIDIA_API_KEY not set")
 
-    tools = _run_async_blocking(get_available_tools)
+    tools = await get_available_tools()
     if not tools:
         raise RuntimeError(
             "no MCP tools discovered — is the shopping_support server reachable?"
@@ -154,11 +151,11 @@ def _build_agent(model: str) -> Any:
     return create_react_agent(llm, tools)
 
 
-def get_agent(model: str | None = None) -> Any:
+async def get_agent(model: str | None = None) -> Any:
     """Return the process-wide React agent, building it on first call."""
     global _cached_agent
     if _cached_agent is None:
-        _cached_agent = _build_agent(model or DEFAULT_TOOL_AGENT_MODEL)
+        _cached_agent = await _build_agent(model or DEFAULT_TOOL_AGENT_MODEL)
     return _cached_agent
 
 
@@ -192,7 +189,7 @@ def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
 
 
 @observe(name="call_mcp_tool")
-def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str, Any]:
+async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str, Any]:
     """Run the React agent on `question` and return a node-shaped dict.
 
     Returns:
@@ -219,29 +216,19 @@ def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str, Any]
     t_start = time.perf_counter()
     try:
         if agent is None:
-            agent = get_agent()
+            agent = await get_agent()
 
         # Pass the Langfuse callback into the React agent's invoke so
         # ChatNVIDIA + each MCP tool show up as nested spans under
-        # `call_mcp_tool` — same pattern the LCEL chain in `generate`
-        # uses. `langfuse_callback()` returns None when tracing is
-        # disabled, in which case we just omit the config entirely.
+        # `call_mcp_tool`. OTel span context (which carries the active
+        # Langfuse trace) propagates naturally through `await` in the
+        # same event loop — no manual context copying needed.
         cb = langfuse_callback()
-        invoke_config: dict[str, Any] | None = (
-            {"callbacks": [cb]} if cb is not None else None
-        )
-
-        async def _invoke():
-            if invoke_config is not None:
-                return await agent.ainvoke(
-                    {"messages": [HumanMessage(content=question)]},
-                    config=invoke_config,
-                )
-            return await agent.ainvoke(
-                {"messages": [HumanMessage(content=question)]}
-            )
-
-        result = _run_async_blocking(_invoke)
+        invoke_state = {"messages": [HumanMessage(content=question)]}
+        if cb is not None:
+            result = await agent.ainvoke(invoke_state, config={"callbacks": [cb]})
+        else:
+            result = await agent.ainvoke(invoke_state)
     except Exception as e:
         logger.warning("Tool sub-agent failed: %s", e, exc_info=True)
         t_end = time.perf_counter()

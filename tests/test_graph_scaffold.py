@@ -23,6 +23,7 @@ intentional, so this file can collect cleanly in the minimal CI env.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from src.agents.graph import (
@@ -150,7 +151,7 @@ def _baseline_state() -> ChatGraphState:
 def test_happy_path_runs_all_five_nodes():
     """classify → retrieve → rerank → generate → postprocess; END state has full shape."""
     graph = build_chat_graph(**_all_stubs())
-    final = graph.invoke(_baseline_state())
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
 
     assert final["intent"] == "in_corpus"
     assert final["retrieved"] == [
@@ -181,7 +182,7 @@ def test_node_execution_order():
         generate_fn=_track("generate", _stub_generate),
         postprocess_fn=_track("postprocess", _stub_postprocess),
     )
-    graph.invoke(_baseline_state())
+    asyncio.run(graph.ainvoke(_baseline_state()))
     assert visited == [
         "classify_intent",
         "retrieve",
@@ -220,7 +221,7 @@ def test_empty_retrieval_routes_to_canned_no_retrieval_path():
         generate_fn=_generate_should_not_run,
         postprocess_fn=_stub_postprocess,
     )
-    final = graph.invoke(_baseline_state())
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
 
     assert rerank_called == []
     assert generate_called == []
@@ -260,7 +261,7 @@ def test_out_of_scope_classifier_short_circuits_before_retrieve():
         generate_fn=_generate_should_not_run,
         postprocess_fn=_stub_postprocess,
     )
-    final = graph.invoke(_baseline_state())
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
 
     assert retrieve_called == []
     assert rerank_called == []
@@ -305,7 +306,7 @@ def test_tool_call_intent_routes_to_mcp_tool_path():
         call_mcp_tool_fn=_stub_call_mcp_tool,
         postprocess_fn=_stub_postprocess,
     )
-    final = graph.invoke(_baseline_state())
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
 
     assert retrieve_called == []
     assert rerank_called == []
@@ -338,7 +339,7 @@ def test_intent_unknown_falls_through_to_rag():
         generate_fn=_stub_generate,
         postprocess_fn=_stub_postprocess,
     )
-    final = graph.invoke(_baseline_state())
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
     # The generate node ran; we got a real answer, not the canned one.
     assert final["answer"] == "Cedric was a Hufflepuff champion who was killed."
 
@@ -371,7 +372,7 @@ def test_all_four_terminal_paths_run_postprocess():
             return _stub_postprocess(state)
 
         graph = build_chat_graph(**{**stubs, "postprocess_fn": _track})
-        graph.invoke(_baseline_state())
+        asyncio.run(graph.ainvoke(_baseline_state()))
         assert postprocess_called == [True]
 
 
@@ -413,7 +414,7 @@ def test_debug_flag_propagates_through_to_debug_info():
         generate_fn=_stub_generate,
         postprocess_fn=_stub_postprocess,
     )
-    final = graph.invoke({**_baseline_state(), "debug_flag": True})
+    final = asyncio.run(graph.ainvoke({**_baseline_state(), "debug_flag": True}))
 
     assert final["debug_info"] is not None
     assert final["debug_info"]["retrieved_chunks"] == ["chunk_a"]
@@ -446,5 +447,5 @@ def test_top_chunks_threads_from_rerank_to_generate():
         generate_fn=_generate_capturing_top_chunks,
         postprocess_fn=_stub_postprocess,
     )
-    graph.invoke(_baseline_state())
+    asyncio.run(graph.ainvoke(_baseline_state()))
     assert seen == [sentinel]
