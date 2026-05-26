@@ -137,7 +137,8 @@ async def chat(
         # 3) Embeddings + Cache + RAG
         logger.info("Generating the embedding for question")
         try:
-            q_embed = embed_question(
+            q_embed = await asyncio.to_thread(
+                embed_question,
                 text=payload.question,
                 user_id=payload.user_external_id,
                 session_id=conv_id,
@@ -155,7 +156,7 @@ async def chat(
         if config.TOGGLE_CACHE and not payload.debug:
             logger.info("Searching the cache store for similar answer")
             try:
-                cached_answer = cache_output(payload, q_embed)
+                cached_answer = await asyncio.to_thread(cache_output, payload, q_embed)
             except CacheError as e:
                 logger.error("Cache error in /chat for conv_id=%s: %s", conv_id, e)
                 # Treat cache failure as non-fatal: just fall back to RAG
