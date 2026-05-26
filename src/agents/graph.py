@@ -278,7 +278,7 @@ async def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
     """
     from src.agents.tool_node import run_tool_agent  # noqa: PLC0415
 
-    result = await run_tool_agent(state["question"])
+    result = await run_tool_agent(state["question"], history=state.get("history", []))
     return {
         "answer": result["answer"],
         "tool_calls": result.get("tool_calls", []),
