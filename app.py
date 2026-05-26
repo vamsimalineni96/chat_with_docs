@@ -22,6 +22,7 @@ from src.utils.errors import (
     InferenceError,
     MilvusError,
 )
+from src.utils.observability import observe, update_current_trace
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
@@ -32,6 +33,17 @@ conversation_service = get_conversation_service()
 redis_service = get_redis_lock()
 embedder = EmbeddingHandler()
 app = FastAPI()
+
+
+@observe(name="embed_question")
+def embed_question(text: str, user_id: str, session_id: str) -> list[float]:
+    """Thin wrapper so the embed span carries user/session context.
+
+    Without this, get_embedding's @observe span is a root-level orphan
+    trace with no user_id or session_id — failures are untraceable.
+    """
+    update_current_trace(user_id=user_id, session_id=session_id)
+    return embedder.get_embedding(text=text, input_type="query")
 
 app.add_middleware(
     CORSMiddleware,
@@ -125,8 +137,10 @@ async def chat(
         # 3) Embeddings + Cache + RAG
         logger.info("Generating the embedding for question")
         try:
-            q_embed = embedder.get_embedding(
-                text=payload.question, input_type="query"
+            q_embed = embed_question(
+                text=payload.question,
+                user_id=payload.user_external_id,
+                session_id=conv_id,
             )
         except EmbeddingError as e:
             logger.error("Embedding error in /chat for conv_id=%s: %s", conv_id, e)
