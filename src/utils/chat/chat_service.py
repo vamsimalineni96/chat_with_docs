@@ -2,7 +2,7 @@ import time
 
 from src.agents.graph import get_chat_graph
 from src.utils import config
-from src.utils.errors import CacheError, ConversationServiceError, InferenceError
+from src.utils.errors import CacheError, ConversationServiceError, InferenceError, NodeError
 from src.utils.observability import observe, update_current_trace
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.logger_config import logger
@@ -131,8 +131,14 @@ async def rag_output(
             }
         )
     except InferenceError:
-        # Already wrapped appropriately
         raise
+    except NodeError as e:
+        logger.exception("Graph node %s failed: %s", e.stage, e)
+        try:
+            update_current_trace(tags=[f"failed_stage:{e.stage}"])
+        except Exception:
+            pass
+        raise InferenceError(f"{e.stage} node failed.") from e
     except Exception as e:
         logger.exception("Unexpected error from chat graph: %s", e)
         raise InferenceError("Unexpected error from chat graph.") from e
