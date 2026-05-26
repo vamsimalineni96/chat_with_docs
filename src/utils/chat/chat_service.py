@@ -151,6 +151,9 @@ async def rag_output(
     # We batch the heuristic + intent tags into one call.
     trace_tags: list[str] = []
 
+    retrieved_count = len(result.get("retrieved") or [])
+    trace_tags.append(f"retrieved_count:{retrieved_count}")
+
     intent = result.get("intent")
     if intent:
         trace_tags.append(f"intent:{intent}")
