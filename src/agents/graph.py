@@ -166,11 +166,14 @@ def _default_retrieve_node(state: ChatGraphState) -> dict[str, Any]:
     debug_info: dict[str, Any] | None = (
         {} if state.get("debug_flag") else None
     )
-    result = retrieve_chunks(
-        question=state["question"],
-        collection_name=state["collection_name"],
-        debug_info=debug_info,
-    )
+    try:
+        result = retrieve_chunks(
+            question=state["question"],
+            collection_name=state["collection_name"],
+            debug_info=debug_info,
+        )
+    except Exception as e:
+        raise NodeError("retrieve", e) from e
     return {
         "retrieved": result["retrieved"],
         "t_milvus_start": result["t_milvus_start"],
