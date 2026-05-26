@@ -143,8 +143,10 @@ def test_run_tool_agent_forwards_question_as_human_message():
     assert len(agent.invoke_calls) == 1
     sent = agent.invoke_calls[0]["messages"]
     assert len(sent) == 1
-    # The HumanMessage content is the user's question.
-    assert sent[0].content == "hello tools"
+    # The question is embedded in the YAML user_prompt wrapper — assert it
+    # reaches the agent without pinning the exact template (so prompt
+    # tweaks in tool_agent.yaml don't break this contract).
+    assert "hello tools" in sent[0].content
 
 
 # ---------------------------------------------------------------------------

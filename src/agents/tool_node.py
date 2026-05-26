@@ -37,7 +37,7 @@ from typing import Any
 
 import yaml
 
-from src.utils.observability import langfuse_callback, observe
+from src.utils.observability import langfuse_callback, observe, update_current_observation
 
 logger = logging.getLogger(__name__)
 
