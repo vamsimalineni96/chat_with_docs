@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 from src.agents.graph import get_chat_graph
@@ -90,8 +91,9 @@ async def rag_output(
     logger.info("Accessing recent messages from the database")
     try:
         t_db_start = time.perf_counter()
-        recent_msgs = converstion_service.get_recent_messages(
-            db, conversation, limit=config.HISTORY_LIMIT, user=user
+        recent_msgs = await asyncio.to_thread(
+            converstion_service.get_recent_messages,
+            db, conversation, limit=config.HISTORY_LIMIT, user=user,
         )
         history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
     except ConversationServiceError:
@@ -102,7 +104,8 @@ async def rag_output(
 
     logger.info("Storing the new message into the database")
     try:
-        converstion_service.add_message(
+        await asyncio.to_thread(
+            converstion_service.add_message,
             db,
             conversation=conversation,
             user=user,
@@ -199,7 +202,8 @@ async def rag_output(
     logger.info("Storing the chatbot's reply to the user query")
     try:
         t_save_start = time.perf_counter()
-        converstion_service.add_message(
+        await asyncio.to_thread(
+            converstion_service.add_message,
             db,
             conversation=conversation,
             user=user,
