@@ -189,7 +189,12 @@ async def rag_output(
 
     if trace_tags:
         try:
-            update_current_trace(tags=trace_tags)
+            update_current_trace(
+                tags=trace_tags,
+                metadata={
+                    "intent_reasoning": (result.get("intent_reasoning") or "")[:100]
+                },
+            )
         except Exception as e:
             logger.debug(
                 "update_current_trace from chat_service tagging failed (non-fatal): %s",

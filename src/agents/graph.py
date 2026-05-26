@@ -301,11 +301,14 @@ def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
     # source — same as the pre-LangGraph behavior — because the citation
     # check just needs SOME context to compare against, and the broader
     # set is more forgiving.
-    report = compute_heuristics_for_answer(
-        state["answer"],
-        retrieved_chunks=state.get("retrieved", []),
-        debug_info=state.get("debug_info"),
-    )
+    try:
+        report = compute_heuristics_for_answer(
+            state["answer"],
+            retrieved_chunks=state.get("retrieved", []),
+            debug_info=state.get("debug_info"),
+        )
+    except Exception as e:
+        raise NodeError("postprocess", e) from e
     return {"heuristics": report}
 
 
