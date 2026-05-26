@@ -46,6 +46,31 @@ def _stub_classify_out_of_scope(state: ChatGraphState) -> dict[str, Any]:
     return {"intent": "out_of_scope", "intent_reasoning": "stub out of scope"}
 
 
+def _stub_classify_tool_call(state: ChatGraphState) -> dict[str, Any]:
+    return {"intent": "tool_call", "intent_reasoning": "stub tool call"}
+
+
+def _stub_call_mcp_tool(state: ChatGraphState) -> dict[str, Any]:
+    """Stand-in for the MCP ReAct sub-agent.
+
+    Emits the same shape as the real `_default_call_mcp_tool_node`:
+    an answer string, a tool_calls record, zeroed milvus timings,
+    and `retrieved=[]` so postprocess's citation check has something
+    to read.
+    """
+    return {
+        "answer": "Order ORD-1001 is shipped via FedEx, ETA 2026-05-27.",
+        "tool_calls": [
+            {"name": "get_order_status", "args": {"order_id": "ORD-1001"}}
+        ],
+        "t_milvus_start": 0.0,
+        "t_milvus_end": 0.0,
+        "t_llm_start": 200.0,
+        "t_llm_end": 201.0,
+        "retrieved": [],
+    }
+
+
 def _stub_retrieve(state: ChatGraphState) -> dict[str, Any]:
     """Return one matching chunk so the conditional routes to rerank."""
     return {
@@ -251,6 +276,50 @@ def test_out_of_scope_classifier_short_circuits_before_retrieve():
     assert final["heuristics"]["overall_passed"] is True
 
 
+def test_tool_call_intent_routes_to_mcp_tool_path():
+    """Classifier returns tool_call → skip retrieve / rerank / generate
+    entirely and run the MCP ReAct sub-agent stub. Postprocess still
+    runs heuristics on whatever answer the sub-agent produced.
+    """
+    retrieve_called: list[bool] = []
+    rerank_called: list[bool] = []
+    generate_called: list[bool] = []
+
+    def _retrieve_should_not_run(state: ChatGraphState) -> dict[str, Any]:
+        retrieve_called.append(True)
+        return _stub_retrieve(state)
+
+    def _rerank_should_not_run(state: ChatGraphState) -> dict[str, Any]:
+        rerank_called.append(True)
+        return _stub_rerank(state)
+
+    def _generate_should_not_run(state: ChatGraphState) -> dict[str, Any]:
+        generate_called.append(True)
+        return _stub_generate(state)
+
+    graph = build_chat_graph(
+        classify_intent_fn=_stub_classify_tool_call,
+        retrieve_fn=_retrieve_should_not_run,
+        rerank_fn=_rerank_should_not_run,
+        generate_fn=_generate_should_not_run,
+        call_mcp_tool_fn=_stub_call_mcp_tool,
+        postprocess_fn=_stub_postprocess,
+    )
+    final = graph.invoke(_baseline_state())
+
+    assert retrieve_called == []
+    assert rerank_called == []
+    assert generate_called == []
+    assert final["intent"] == "tool_call"
+    assert final["answer"].startswith("Order ORD-1001 is shipped")
+    assert final["tool_calls"] == [
+        {"name": "get_order_status", "args": {"order_id": "ORD-1001"}}
+    ]
+    # Postprocess still ran — the heuristic invariant holds on every
+    # terminal path, MCP branch included.
+    assert final["heuristics"]["overall_passed"] is True
+
+
 def test_intent_unknown_falls_through_to_rag():
     """Anything other than the explicit "out_of_scope" verdict routes
     to RAG. This guards against a bad future intent value (e.g. an
@@ -274,7 +343,7 @@ def test_intent_unknown_falls_through_to_rag():
     assert final["answer"] == "Cedric was a Hufflepuff champion who was killed."
 
 
-def test_all_three_terminal_paths_run_postprocess():
+def test_all_four_terminal_paths_run_postprocess():
     """Sanity: heuristics fire on every answer leaving the graph,
     regardless of which branch produced it.
     """
@@ -285,6 +354,12 @@ def test_all_three_terminal_paths_run_postprocess():
         {**_all_stubs(), "retrieve_fn": _stub_retrieve_empty},
         # out-of-scope path
         {**_all_stubs(), "classify_intent_fn": _stub_classify_out_of_scope},
+        # tool_call path (added in PR #5)
+        {
+            **_all_stubs(),
+            "classify_intent_fn": _stub_classify_tool_call,
+            "call_mcp_tool_fn": _stub_call_mcp_tool,
+        },
     ):
         postprocess_called: list[bool] = []
 

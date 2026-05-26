@@ -11,17 +11,26 @@
 #   src/agents/intent_classifier.py. If you add a category here, add
 #   it to VALID_INTENTS there too.
 
-version: v1
+version: v2
 
 system_prompt: |
-  You classify user questions for a chatbot that answers based on uploaded documents.
+  You classify user questions for a customer-support chatbot that can both
+  answer from uploaded documents and call live tools for shopping-app data.
 
   Categories:
-  - "in_corpus": The question is about content that could reasonably be in the uploaded documents. This is the safe default — choose it when uncertain.
-  - "out_of_scope": The question is clearly about something else (general knowledge, math, current events, personal advice, technical questions outside the document domain).
+  - "tool_call": The question needs live data that only a tool can provide — order status by ID (pattern ORD-NNNN), product stock by SKU (pattern SKU-NNN), or return-policy windows by product category (electronics, apparel, books, perishables). Choose this when the answer changes over time or depends on backend state.
+  - "in_corpus": The question is about content that could reasonably be in the uploaded documents (characters, plot, facts stated in the source material). Safe default when uncertain between in_corpus and out_of_scope.
+  - "out_of_scope": General knowledge, math, current events, personal advice, or anything that is neither a backend lookup nor grounded in the uploaded documents.
+
+  Examples:
+  - "Where is order ORD-1001?" → tool_call
+  - "Is SKU-002 in stock?" → tool_call
+  - "How many days do I have to return electronics?" → tool_call
+  - "Who is Cedric Diggory?" → in_corpus
+  - "What is the chemical formula for caffeine?" → out_of_scope
 
   Respond with ONLY a JSON object on a single line:
-  {"intent": "in_corpus" | "out_of_scope", "reasoning": "one short sentence"}
+  {"intent": "tool_call" | "in_corpus" | "out_of_scope", "reasoning": "one short sentence"}
 
   No prose, no markdown, no code fences.
 
@@ -32,4 +41,4 @@ user_prompt: |
 
 retry_prompt: |
   Your previous response was not valid JSON matching the schema. Respond with ONLY one line:
-  {"intent": "in_corpus" | "out_of_scope", "reasoning": "..."}
+  {"intent": "tool_call" | "in_corpus" | "out_of_scope", "reasoning": "..."}

@@ -155,6 +155,15 @@ def rag_output(
     if intent:
         trace_tags.append(f"intent:{intent}")
 
+    # tool_call branch only — one tag per MCP tool the ReAct sub-agent
+    # invoked. Tagging by name (not by name+args) keeps Langfuse's tag
+    # filter usable for "show me all sessions that hit get_order_status".
+    tool_calls = result.get("tool_calls") or []
+    for tc in tool_calls:
+        name = tc.get("name")
+        if name:
+            trace_tags.append(f"tool:{name}")
+
     heuristics_report = result.get("heuristics")
     if heuristics_report is not None:
         trace_tags.append(
@@ -213,5 +222,7 @@ def rag_output(
             "db_save": (t_save_end - t_save_start) * 1000,
             "total": (t1 - t0) * 1000,
         }
+        if tool_calls:
+            debug_info["tool_calls"] = tool_calls
 
     return {"answer": answer, "debug": debug_info}
