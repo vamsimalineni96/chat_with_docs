@@ -32,11 +32,66 @@ from __future__ import annotations
 import logging
 import os
 import time
-from typing import Any
+from collections.abc import Callable, Coroutine
+from typing import Any, TypeVar
+
+from src.utils.observability import langfuse_callback, observe
 
 from src.utils.observability import langfuse_callback, observe
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# Single worker thread that owns a fresh asyncio loop. Reused across
+# requests so we don't pay thread-spawn cost on every tool_call. One
+# worker is enough — each call blocks the caller until done, and we
+# don't try to parallelise tool invocations.
+_LOOP_THREAD: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _get_loop_thread() -> concurrent.futures.ThreadPoolExecutor:
+    global _LOOP_THREAD
+    if _LOOP_THREAD is None:
+        _LOOP_THREAD = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="tool-node-loop"
+        )
+    return _LOOP_THREAD
+
+
+def _run_async_blocking(
+    coro_factory: Callable[[], Coroutine[Any, Any, _T]],
+) -> _T:
+    """Run a fresh coroutine to completion from a sync caller.
+
+    FastAPI request handlers are `async def`, so by the time we land
+    inside `graph.invoke -> _default_call_mcp_tool_node -> here`,
+    there's already a running event loop in the calling thread. Plain
+    `asyncio.run(...)` would raise "cannot be called from a running
+    event loop". This helper detects that case and hops to a worker
+    thread that owns its own loop. From a pure-sync caller (tests,
+    scripts) it just uses `asyncio.run` on the current thread.
+
+    `coro_factory` must be zero-arg returning a fresh coroutine — a
+    coroutine instance can't be shared across event loops, so the
+    worker thread builds its own.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop on this thread; safe to run directly.
+        return asyncio.run(coro_factory())
+    # Copy the calling thread's contextvars (which include the OTel /
+    # Langfuse span context the `@observe` decorator pushed) so child
+    # spans created inside the React loop — ChatNVIDIA, each MCP tool —
+    # attach to the live trace instead of being orphaned. Without this,
+    # the worker thread starts with empty contextvars and the trace
+    # tree truncates at `call_mcp_tool`.
+    ctx = contextvars.copy_context()
+    fut = _get_loop_thread().submit(
+        lambda: ctx.run(asyncio.run, coro_factory())
+    )
+    return fut.result()
 
 DEFAULT_TOOL_AGENT_MODEL = os.environ.get(
     "TOOL_AGENT_MODEL", "meta/llama-3.1-70b-instruct"
@@ -149,6 +204,12 @@ async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str
     Never raises. The graph's postprocess step is what surfaces an
     "I couldn't help" response to the user via the refusal heuristic.
     `agent=` is the DI seam tests use to inject a fake agent.
+
+    We call `agent.ainvoke` (async) through `_run_async_blocking` rather
+    than the sync `.invoke`. The React agent dispatches to async MCP
+    tools internally; using `.invoke` from inside FastAPI's running
+    loop would hit the same "cannot run asyncio.run from a running
+    loop" failure that `_build_agent` had on the first call.
     """
     from langchain_core.messages import HumanMessage  # noqa: PLC0415
 
