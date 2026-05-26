@@ -39,6 +39,8 @@ from typing import Any
 
 import yaml
 
+from src.utils.observability import observe
+
 DEFAULT_CLASSIFIER_MODEL = os.environ.get(
     "INTENT_CLASSIFIER_MODEL", "meta/llama-3.1-8b-instruct"
 )
@@ -142,6 +144,7 @@ def _call_classifier_llm(system: str, user: str, model: str) -> str:
     return response.content
 
 
+@observe(name="classify_intent")
 def classify_intent(
     question: str,
     *,
