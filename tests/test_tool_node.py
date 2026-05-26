@@ -41,21 +41,33 @@ def _msg(content: str = "", tool_calls: list[dict[str, Any]] | None = None):
 
 class _FakeAgent:
     """Mimics the surface of a `create_react_agent` compiled graph:
-    `.invoke({"messages": [...]})` returns `{"messages": [...]}` where
-    the last message is the synthesized answer.
+    `await .ainvoke({"messages": [...]})` returns `{"messages": [...]}`
+    where the last message is the synthesized answer.
+
+    Async because the production code calls `agent.ainvoke` (the React
+    agent's async path — see the docstring in `run_tool_agent` for why).
+    `_run_async_blocking` handles the sync-caller bridge.
     """
 
     def __init__(self, messages: list[Any]):
         self._messages = messages
         self.invoke_calls: list[dict[str, Any]] = []
 
-    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(
+        self, state: dict[str, Any], config: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        # The real React agent's ainvoke accepts an optional RunnableConfig
+        # — production code passes the Langfuse callback through it. We
+        # accept it here for signature parity but don't assert on it,
+        # since these tests target the wrapper's behavior, not tracing.
         self.invoke_calls.append(state)
         return {"messages": self._messages}
 
 
 class _RaisingAgent:
-    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+    async def ainvoke(
+        self, state: dict[str, Any], config: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         raise RuntimeError("simulated agent blow-up")
 
 

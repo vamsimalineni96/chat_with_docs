@@ -283,7 +283,7 @@ with st.sidebar:
 
 
 # Main pane
-st.title("Bodycam Search Chat")
+st.title("Chat")
 
 if not st.session_state.user_external_id:
     st.info("👈 Enter a user ID in the sidebar to start chatting.")
