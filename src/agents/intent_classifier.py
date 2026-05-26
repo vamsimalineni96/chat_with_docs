@@ -3,6 +3,9 @@
 Sits at the head of the graph in `src/agents/graph.py` and decides
 which downstream path a user question should take:
 
+  - `tool_call`    — route to the MCP ReAct sub-agent for live
+                     shopping-app data (order status, inventory,
+                     return policies).
   - `in_corpus`    — RAG over the uploaded documents (the default).
   - `out_of_scope` — short-circuit to a canned response without
                      burning a Milvus + rerank + LLM call.
@@ -41,7 +44,7 @@ DEFAULT_CLASSIFIER_MODEL = os.environ.get(
 )
 DEFAULT_MAX_RETRIES = 2
 
-VALID_INTENTS = ("in_corpus", "out_of_scope")
+VALID_INTENTS = ("tool_call", "in_corpus", "out_of_scope")
 FALLBACK_INTENT = "in_corpus"
 FALLBACK_REASONING = "classifier unavailable; defaulting to in_corpus"
 

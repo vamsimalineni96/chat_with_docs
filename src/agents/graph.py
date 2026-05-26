@@ -2,40 +2,41 @@
 
 Graph topology:
 
-           START
+                       START
+                         │
+                         ▼
+                   classify_intent      (LLM router: 3 intents)
+                         │
+            ┌────────────┼────────────┐
+            │            │            │
+            ▼            ▼            ▼
+        retrieve   call_mcp_tool  canned_out_of_scope
+            │            │            │
+         ┌──┴──┐          │            │
+         │     │          │            │
+         ▼     ▼          │            │
+      rerank  canned_no_retrieval      │
+         │       │        │            │
+         ▼       │        │            │
+      generate   │        │            │
+         │       │        │            │
+         └───┬───┴────────┴────────────┘
+             ▼
+         postprocess (heuristics)
              │
              ▼
-       classify_intent      (LLM-driven router)
-             │
-        ┌────┴────┐         (conditional: in_corpus vs out_of_scope)
-        │         │
-        ▼         ▼
-    retrieve   canned_out_of_scope
-        │             │
-     ┌──┴──┐          │   (conditional: any chunks?)
-     │     │          │
-     ▼     ▼          │
-  rerank  canned_no_retrieval
-     │       │        │
-     ▼       │        │
-  generate   │        │
-     │       │        │
-     └───┬───┴────────┘
-         ▼
-     postprocess (heuristics)
-         │
-         ▼
-        END
+            END
 
-The classifier in front of `retrieve` is the first "agent" decision:
+The classifier in front of `retrieve` is the first agent decision:
 - `in_corpus`    → run RAG normally
+- `tool_call`    → spawn the MCP ReAct sub-agent (live shopping data)
 - `out_of_scope` → short-circuit before burning Milvus + rerank + LLM
 
 The second conditional (after `retrieve`) handles the case where the
-classifier let a question through but Milvus returned nothing
-anyway — same canned-no-retrieval path as before.
+classifier let a question through but Milvus returned nothing anyway
+— same canned-no-retrieval path as before.
 
-`postprocess` runs heuristics on all three terminal paths so every
+`postprocess` runs heuristics on all four terminal paths so every
 answer carries a heuristic report.
 
 Each default node lazy-imports its langchain-dependent
@@ -105,10 +106,16 @@ class ChatGraphState(TypedDict, total=False):
     t_rerank_start: float
     t_rerank_end: float
 
-    # --- written by generate (or canned_no_retrieval) ---------------------
+    # --- written by generate (or canned_no_retrieval / call_mcp_tool) -----
     answer: str
     t_llm_start: float
     t_llm_end: float
+
+    # --- written by call_mcp_tool only ------------------------------------
+    # List of {"name": str, "args": dict} records, one per tool the ReAct
+    # sub-agent invoked. Empty list on the failure path. Surfaced in the
+    # chat trace so we can see which MCP tools the agent reached for.
+    tool_calls: list[dict[str, Any]]
 
     # --- written by postprocess -------------------------------------------
     heuristics: dict[str, Any] | None
@@ -235,6 +242,35 @@ def _default_canned_out_of_scope_node(state: ChatGraphState) -> dict[str, Any]:
     }
 
 
+def _default_call_mcp_tool_node(state: ChatGraphState) -> dict[str, Any]:
+    """Run the MCP ReAct sub-agent on the user's question.
+
+    Spawns the wrapped `create_react_agent` (cached at module level
+    inside `tool_node`), which discovers MCP tools, calls them, and
+    synthesizes a user-facing answer in one ReAct loop. On failure
+    (no tools / LLM down / agent error), tool_node returns the
+    canned `TOOL_FAILURE_ANSWER` so the `answer` field is always
+    populated — same invariant as the other canned paths.
+
+    Milvus timings are stamped to 0 (this branch never touches
+    Milvus) so chat_service's metrics log shows the cost saving
+    relative to the RAG path. `retrieved` is set to [] so postprocess
+    can still run citation checks without KeyError.
+    """
+    from src.agents.tool_node import run_tool_agent  # noqa: PLC0415
+
+    result = run_tool_agent(state["question"])
+    return {
+        "answer": result["answer"],
+        "tool_calls": result.get("tool_calls", []),
+        "t_milvus_start": 0.0,
+        "t_milvus_end": 0.0,
+        "t_llm_start": result.get("t_llm_start", 0.0),
+        "t_llm_end": result.get("t_llm_end", 0.0),
+        "retrieved": [],
+    }
+
+
 def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
     from src.utils.rag_pipeline import compute_heuristics_for_answer  # noqa: PLC0415
 
@@ -258,14 +294,19 @@ def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
 def _route_after_classify(state: ChatGraphState) -> str:
     """First conditional in the graph — drives the agentic routing.
 
-    Anything other than the explicit "out_of_scope" verdict falls through
-    to RAG. That's a deliberate safety bias: a false-positive on
-    out_of_scope refuses a legitimate question, whereas a false-positive
-    on in_corpus just wastes a retrieval. The classifier's own fallback
-    on failure is also `in_corpus`, so this branch's default is doubly
-    safe.
+    Three explicit branches; everything else falls through to RAG.
+    The fall-through is a deliberate safety bias — a false-positive
+    on out_of_scope or tool_call would refuse / mishandle a legitimate
+    question, whereas falling through to RAG at worst wastes a
+    retrieval. The classifier's own failure-mode fallback is also
+    `in_corpus`, so this branch's default is doubly safe.
     """
-    return "out_of_scope" if state.get("intent") == "out_of_scope" else "continue"
+    intent = state.get("intent")
+    if intent == "tool_call":
+        return "tool_call"
+    if intent == "out_of_scope":
+        return "out_of_scope"
+    return "continue"
 
 
 def _route_after_retrieve(state: ChatGraphState) -> str:
@@ -284,6 +325,7 @@ def build_chat_graph(
     retrieve_fn: NodeFn | None = None,
     rerank_fn: NodeFn | None = None,
     generate_fn: NodeFn | None = None,
+    call_mcp_tool_fn: NodeFn | None = None,
     canned_no_retrieval_fn: NodeFn | None = None,
     canned_out_of_scope_fn: NodeFn | None = None,
     postprocess_fn: NodeFn | None = None,
@@ -303,6 +345,9 @@ def build_chat_graph(
     g.add_node("rerank", rerank_fn or _default_rerank_node)
     g.add_node("generate", generate_fn or _default_generate_node)
     g.add_node(
+        "call_mcp_tool", call_mcp_tool_fn or _default_call_mcp_tool_node
+    )
+    g.add_node(
         "canned_no_retrieval",
         canned_no_retrieval_fn or _default_canned_no_retrieval_node,
     )
@@ -316,7 +361,11 @@ def build_chat_graph(
     g.add_conditional_edges(
         "classify_intent",
         _route_after_classify,
-        {"continue": "retrieve", "out_of_scope": "canned_out_of_scope"},
+        {
+            "continue": "retrieve",
+            "tool_call": "call_mcp_tool",
+            "out_of_scope": "canned_out_of_scope",
+        },
     )
     g.add_conditional_edges(
         "retrieve",
@@ -325,6 +374,7 @@ def build_chat_graph(
     )
     g.add_edge("rerank", "generate")
     g.add_edge("generate", "postprocess")
+    g.add_edge("call_mcp_tool", "postprocess")
     g.add_edge("canned_no_retrieval", "postprocess")
     g.add_edge("canned_out_of_scope", "postprocess")
     g.add_edge("postprocess", END)

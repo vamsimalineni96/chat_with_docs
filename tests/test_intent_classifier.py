@@ -103,12 +103,28 @@ def test_classify_falls_back_on_invalid_intent_value(monkeypatch):
     monkeypatch.setattr(
         ic,
         "_call_classifier_llm",
-        _constant('{"intent": "tool_call", "reasoning": "..."}'),
+        _constant('{"intent": "made_up_category", "reasoning": "..."}'),
     )
-    # tool_call is the *future* category for PR #4; right now it's invalid.
     result = ic.classify_intent("Where is my order?", max_retries=0)
     assert result.intent == ic.FALLBACK_INTENT
     assert result.error is not None
+
+
+def test_classify_happy_path_tool_call(monkeypatch):
+    """tool_call is the third valid intent (added in PR #5) — routes to
+    the MCP ReAct sub-agent. Mirrors the in_corpus / out_of_scope shape.
+    """
+    monkeypatch.setattr(
+        ic,
+        "_call_classifier_llm",
+        _constant(
+            '{"intent": "tool_call", "reasoning": "asks for order status by ID"}'
+        ),
+    )
+    result = ic.classify_intent("Where is order ORD-1001?")
+    assert result.intent == "tool_call"
+    assert result.reasoning == "asks for order status by ID"
+    assert result.error is None
 
 
 def test_classify_falls_back_when_llm_raises(monkeypatch):
