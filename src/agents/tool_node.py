@@ -32,7 +32,10 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 from typing import Any
+
+import yaml
 
 from src.utils.observability import langfuse_callback, observe
 
@@ -41,6 +44,27 @@ logger = logging.getLogger(__name__)
 DEFAULT_TOOL_AGENT_MODEL = os.environ.get(
     "TOOL_AGENT_MODEL", "meta/llama-3.1-70b-instruct"
 )
+
+_PROMPT_PATH = Path(__file__).parent / "prompts" / "tool_agent.yaml"
+_PROMPTS: dict[str, str] | None = None
+
+
+def _load_prompts() -> dict[str, str]:
+    global _PROMPTS
+    if _PROMPTS is None:
+        with open(_PROMPT_PATH) as fh:
+            loaded = yaml.safe_load(fh)
+        for required in ("system_prompt", "user_prompt"):
+            if required not in loaded:
+                raise RuntimeError(
+                    f"tool_agent prompts file missing required key: {required}"
+                )
+        _PROMPTS = loaded
+    return _PROMPTS
+
+
+def _build_user_message(question: str) -> str:
+    return _load_prompts()["user_prompt"].format(question=question)
 
 # Surfaced when the sub-agent can't run (no tools discovered, LLM
 # unreachable, ReAct loop blew up). Phrased to invite a retry rather
@@ -93,7 +117,8 @@ async def _build_agent(model: str) -> Any:
     # only working fix was to switch `TOOL_AGENT_MODEL` to a model that
     # natively supports parallel calls (Mistral / Mixtral families
     # generally do).
-    return create_react_agent(llm, tools)
+    system_prompt = _load_prompts()["system_prompt"]
+    return create_react_agent(llm, tools, prompt=system_prompt)
 
 
 async def get_agent(model: str | None = None) -> Any:
@@ -163,7 +188,7 @@ async def run_tool_agent(question: str, *, agent: Any | None = None) -> dict[str
         # Langfuse trace) propagates naturally through `await` in the
         # same event loop — no manual context copying needed.
         cb = langfuse_callback()
-        invoke_state = {"messages": [HumanMessage(content=question)]}
+        invoke_state = {"messages": [HumanMessage(content=_build_user_message(question))]}
         if cb is not None:
             result = await agent.ainvoke(invoke_state, config={"callbacks": [cb]})
         else:
