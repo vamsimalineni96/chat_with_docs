@@ -62,17 +62,49 @@ def _resolve_server_path() -> str:
 def _build_server_config() -> dict[str, Any]:
     """Build the MultiServerMCPClient config dict.
 
-    Single server today; the dict shape supports adding more servers
-    in PR #5+ without changing the call sites — every server's tools
-    show up in the same flat list from `get_available_tools()`.
+    Always includes the local shopping_support mock (zero-dependency
+    demo fallback). When STRIPE_SECRET_KEY is present in the
+    environment, the real Stripe MCP server is added alongside it —
+    its tools are merged into the same flat list that the ReAct agent
+    sees, so the agent can answer both mock-order questions and real
+    Stripe queries in a single turn.
+
+    This is the key MCP multi-server pattern: one client, N servers,
+    one flat tool list — the agent never knows or cares which server
+    a tool came from.
     """
-    return {
+    config: dict[str, Any] = {
         "shopping_support": {
             "command": sys.executable,
             "args": [_resolve_server_path()],
             "transport": "stdio",
         }
     }
+
+    stripe_key = os.environ.get("STRIPE_SECRET_KEY")
+    if stripe_key:
+        # Use our own Python Stripe MCP server (mcp_servers/stripe_support.py)
+        # instead of the npx @stripe/mcp package. The npx package exposes a
+        # catch-all `stripe_api_execute` tool with a massive schema that causes
+        # Llama-family models to time out. Our Python server has 6 focused tools
+        # with small schemas — same pattern as shopping_support.py.
+        # STRIPE_SECRET_KEY is inherited naturally since this is a Python
+        # subprocess in the same process environment.
+        project_root = Path(__file__).resolve().parents[2]
+        stripe_server_path = str(project_root / "mcp_servers" / "stripe_support.py")
+        config["stripe"] = {
+            "command": sys.executable,
+            "args": [stripe_server_path],
+            "transport": "stdio",
+            "env": {**os.environ, "STRIPE_SECRET_KEY": stripe_key},
+        }
+        logger.info("Stripe MCP server enabled (STRIPE_SECRET_KEY is set)")
+    else:
+        logger.info(
+            "Stripe MCP server disabled — set STRIPE_SECRET_KEY to enable real Stripe tools"
+        )
+
+    return config
 
 
 # Module-level caches. `get_client()` / `get_available_tools()` are

@@ -267,7 +267,19 @@ async def run_tool_agent(
         }
 
     final = messages[-1]
-    answer = getattr(final, "content", None) or str(final)
+    answer = getattr(final, "content", None) or ""
+    if not answer:
+        # Model returned an empty final message — can happen when the tool
+        # schema payload is too large for the model to synthesize a reply.
+        logger.warning("Tool sub-agent returned empty content in final message")
+        return {
+            "answer": TOOL_FAILURE_ANSWER,
+            "tool_calls": _extract_tool_calls(messages),
+            "tool_failure_reason": "empty_content",
+            "t_llm_start": t_start,
+            "t_llm_end": t_end,
+            "error": "agent returned empty content",
+        }
     return {
         "answer": answer,
         "tool_calls": _extract_tool_calls(messages),

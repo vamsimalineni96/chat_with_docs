@@ -1,4 +1,5 @@
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
 from uuid import UUID
 
@@ -171,9 +172,23 @@ async def chat(
         else:
             logger.info("Using RAG to answer the question")
 
-        rag_result = await rag_output(
-            payload, db, conversation, user, query_vec=q_embed
-        )
+        timeout_s = int(os.environ.get("CHAT_TIMEOUT_SECONDS", "90"))
+        try:
+            rag_result = await asyncio.wait_for(
+                rag_output(payload, db, conversation, user, query_vec=q_embed),
+                timeout=timeout_s,
+            )
+        except asyncio.TimeoutError:
+            logger.error(
+                "RAG pipeline timed out after %ds for conv_id=%s", timeout_s, conv_id
+            )
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "error_type": "TIMEOUT_ERROR",
+                    "message": "The request took too long to process. Please try again.",
+                },
+            )
         return ChatResponse(
             conversation_id=conv_id,
             answer=rag_result["answer"],
