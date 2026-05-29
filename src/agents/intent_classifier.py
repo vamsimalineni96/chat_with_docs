@@ -93,8 +93,21 @@ def _load_prompts() -> dict[str, str]:
     return _PROMPTS
 
 
-def _build_user_prompt(question: str) -> str:
-    return _load_prompts()["user_prompt"].format(question=question)
+def _build_user_prompt(question: str, history: list[dict] | None = None) -> str:
+    last_turns = (history or [])[-2:]  # at most last 2 turns
+    if last_turns:
+        lines = ["Recent conversation:"]
+        for turn in last_turns:
+            role = turn.get("role", "").capitalize()
+            content = (turn.get("content") or "")[:200]
+            lines.append(f"  {role}: {content}")
+        lines.append("")
+        history_context = "\n".join(lines) + "\n"
+    else:
+        history_context = ""
+    return _load_prompts()["user_prompt"].format(
+        question=question, history_context=history_context
+    )
 
 
 def _extract_json(text: str) -> dict[str, Any]:
@@ -148,6 +161,7 @@ def _call_classifier_llm(system: str, user: str, model: str) -> str:
 def classify_intent(
     question: str,
     *,
+    history: list[dict] | None = None,
     model: str | None = None,
     max_retries: int = DEFAULT_MAX_RETRIES,
 ) -> IntentResult:
@@ -161,7 +175,7 @@ def classify_intent(
     model = model or DEFAULT_CLASSIFIER_MODEL
     prompts = _load_prompts()
     system = prompts["system_prompt"]
-    user = _build_user_prompt(question)
+    user = _build_user_prompt(question, history=history)
 
     last_error: str | None = None
     for attempt in range(max_retries + 1):

@@ -151,7 +151,7 @@ def _default_classify_intent_node(state: ChatGraphState) -> dict[str, Any]:
     from src.agents.intent_classifier import classify_intent  # noqa: PLC0415
 
     try:
-        result = classify_intent(state["question"])
+        result = classify_intent(state["question"], history=state.get("history", []))
     except Exception as e:
         raise NodeError("classify_intent", e) from e
     return {

@@ -23,7 +23,11 @@ from src.utils.errors import (
     InferenceError,
     MilvusError,
 )
+from opentelemetry import trace as otel_trace
+
 from src.utils.observability import observe, update_current_trace
+
+_tracer = otel_trace.get_tracer(__name__)
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
@@ -37,13 +41,7 @@ app = FastAPI()
 
 
 @observe(name="embed_question")
-def embed_question(text: str, user_id: str, session_id: str) -> list[float]:
-    """Thin wrapper so the embed span carries user/session context.
-
-    Without this, get_embedding's @observe span is a root-level orphan
-    trace with no user_id or session_id — failures are untraceable.
-    """
-    update_current_trace(user_id=user_id, session_id=session_id)
+def embed_question(text: str) -> list[float]:
     return embedder.get_embedding(text=text, input_type="query")
 
 app.add_middleware(
@@ -75,15 +73,16 @@ async def chat(
     """
     Multi-user, multi-turn chat endpoint with per-conversation locking.
 
-    Note: the async FastAPI route is *not* decorated with @observe because the
-    langfuse 2.x async decorator doesn't play well with FastAPI route
-    serialization. Trace metadata (user_id, session_id, tags) is attached
-    inside the first synchronous function this route calls — either
-    `cache_output` (cache-hit path) or `rag_output` (RAG path).
+    A root OTel span ("chat_request") is started manually here so that
+    embed_question and rag_output/cache_output all appear as child spans
+    under a single Langfuse trace instead of as separate root traces.
+    The @observe decorator is not used on the route itself because it
+    interferes with FastAPI's response serialization.
     """
     conv_id: str | None = None
     lock_token: str | None = None
-
+    _root_span_ctx = _tracer.start_as_current_span("chat_request")
+    _root_span_ctx.__enter__()
     try:
         # 1) User + conversation setup
         logger.info("Fetching/Creating the user in the database")
@@ -117,6 +116,7 @@ async def chat(
             )
 
         conv_id = str(conversation.id)
+        update_current_trace(user_id=payload.user_external_id, session_id=conv_id)
 
         # 2) Locking
         try:
@@ -141,8 +141,6 @@ async def chat(
             q_embed = await asyncio.to_thread(
                 embed_question,
                 text=payload.question,
-                user_id=payload.user_external_id,
-                session_id=conv_id,
             )
         except EmbeddingError as e:
             logger.error("Embedding error in /chat for conv_id=%s: %s", conv_id, e)
@@ -275,6 +273,7 @@ async def chat(
                     conv_id,
                     e,
                 )
+        _root_span_ctx.__exit__(None, None, None)
 
 
 @app.get("/list_conversations")
