@@ -165,7 +165,7 @@ async def get_available_tools() -> list[BaseTool]:
         return_exceptions=True,
     )
     all_tools: list[BaseTool] = []
-    for name, result in zip(server_configs.keys(), results):
+    for name, result in zip(server_configs.keys(), results, strict=False):
         if isinstance(result, Exception):
             logger.warning("Server '%s': discovery failed — %s", name, result)
         else:
