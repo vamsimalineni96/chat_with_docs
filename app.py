@@ -5,6 +5,7 @@ from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry import trace as otel_trace
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -23,16 +24,14 @@ from src.utils.errors import (
     InferenceError,
     MilvusError,
 )
-from opentelemetry import trace as otel_trace
-
 from src.utils.observability import observe, update_current_trace
-
-_tracer = otel_trace.get_tracer(__name__)
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.redis_lock import ConversationLockError, get_redis_lock
+
+_tracer = otel_trace.get_tracer(__name__)
 
 conversation_service = get_conversation_service()
 redis_service = get_redis_lock()
@@ -176,7 +175,7 @@ async def chat(
                 rag_output(payload, db, conversation, user, query_vec=q_embed),
                 timeout=timeout_s,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.error(
                 "RAG pipeline timed out after %ds for conv_id=%s", timeout_s, conv_id
             )

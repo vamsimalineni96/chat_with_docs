@@ -82,14 +82,21 @@ def _build_server_config() -> dict[str, Any]:
     }
 
     stripe_key = os.environ.get("STRIPE_SECRET_KEY")
-    if stripe_key:
-        # Use our own Python Stripe MCP server (mcp_servers/stripe_support.py)
-        # instead of the npx @stripe/mcp package. The npx package exposes a
-        # catch-all `stripe_api_execute` tool with a massive schema that causes
-        # Llama-family models to time out. Our Python server has 6 focused tools
-        # with small schemas — same pattern as shopping_support.py.
-        # STRIPE_SECRET_KEY is inherited naturally since this is a Python
-        # subprocess in the same process environment.
+    stripe_mcp_url = os.environ.get("STRIPE_MCP_URL")
+
+    if stripe_mcp_url:
+        # Production mode: Stripe MCP runs as a standalone SSE service.
+        # Set STRIPE_MCP_URL=http://stripe-mcp:8001/sse (or wherever it's deployed).
+        # The service manages its own STRIPE_SECRET_KEY — the main app doesn't
+        # need the key at all in this mode.
+        config["stripe"] = {
+            "url": stripe_mcp_url,
+            "transport": "sse",
+        }
+        logger.info("Stripe MCP server connected via SSE at %s", stripe_mcp_url)
+    elif stripe_key:
+        # Dev mode: spawn stripe_support.py as a local subprocess (stdio).
+        # Simple, zero-infrastructure, restarts with the app.
         project_root = Path(__file__).resolve().parents[2]
         stripe_server_path = str(project_root / "mcp_servers" / "stripe_support.py")
         config["stripe"] = {
@@ -98,10 +105,10 @@ def _build_server_config() -> dict[str, Any]:
             "transport": "stdio",
             "env": {**os.environ, "STRIPE_SECRET_KEY": stripe_key},
         }
-        logger.info("Stripe MCP server enabled (STRIPE_SECRET_KEY is set)")
+        logger.info("Stripe MCP server enabled in dev mode (stdio subprocess)")
     else:
         logger.info(
-            "Stripe MCP server disabled — set STRIPE_SECRET_KEY to enable real Stripe tools"
+            "Stripe MCP server disabled — set STRIPE_SECRET_KEY (dev) or STRIPE_MCP_URL (prod)"
         )
 
     return config
@@ -128,33 +135,49 @@ def get_client() -> MultiServerMCPClient:
     return _client
 
 
+async def _discover_server(name: str, config: dict[str, Any]) -> list[BaseTool]:
+    """Discover tools from a single MCP server. Returns [] on failure."""
+    try:
+        client = MultiServerMCPClient({name: config})
+        tools = await client.get_tools()
+        result = list(tools)
+        logger.info("Server '%s': discovered %d tool(s): %s", name, len(result), [t.name for t in result])
+        return result
+    except Exception as e:
+        logger.warning("Server '%s': failed to discover tools — %s", name, e)
+        return []
+
+
 async def get_available_tools() -> list[BaseTool]:
     """Discover tools from all configured MCP servers.
 
-    Cached after the first successful discovery. On failure (server
-    not running, stdio handshake error, etc.), returns an empty list
-    and logs a warning — graceful degradation lets the rest of the
-    app run when the MCP server is down.
+    Each server is queried independently — if one fails the others
+    still contribute their tools. Cached after first run.
     """
     global _cached_tools
     if _cached_tools is not None:
         return _cached_tools
-    try:
-        client = get_client()
-        tools = await client.get_tools()
-        _cached_tools = list(tools)
-        logger.info(
-            "Discovered %d MCP tool(s): %s",
-            len(_cached_tools),
-            [t.name for t in _cached_tools],
-        )
-        return _cached_tools
-    except Exception as e:
-        logger.warning(
-            "Failed to discover MCP tools (continuing with empty tool set): %s",
-            e,
-        )
-        return []
+
+    server_configs = _build_server_config()
+    import asyncio
+    results = await asyncio.gather(
+        *[_discover_server(name, cfg) for name, cfg in server_configs.items()],
+        return_exceptions=True,
+    )
+    all_tools: list[BaseTool] = []
+    for name, result in zip(server_configs.keys(), results, strict=False):
+        if isinstance(result, Exception):
+            logger.warning("Server '%s': discovery failed — %s", name, result)
+        else:
+            all_tools.extend(result)
+
+    if all_tools:
+        _cached_tools = all_tools
+        logger.info("Total tools discovered: %d — %s", len(_cached_tools), [t.name for t in _cached_tools])
+    else:
+        logger.warning("No tools discovered from any MCP server")
+
+    return all_tools
 
 
 async def call_tool(name: str, args: dict[str, Any]) -> Any:

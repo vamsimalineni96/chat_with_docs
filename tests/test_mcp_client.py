@@ -41,17 +41,21 @@ def _fake_tool(name: str, return_value: Any = "ok"):
 
 
 def _install_fake_client(monkeypatch, tools, *, get_tools_raises=None):
-    """Replace the module-level client with one that returns the given
-    tools (or raises). Returns the fake client so tests can assert on
-    call counts.
+    """Patch _discover_server so no real MCP subprocess is spawned.
+
+    Returns a counter dict with key "n" tracking how many times
+    _discover_server was called — used by caching / retry tests.
     """
-    fake = MagicMock()
-    if get_tools_raises is not None:
-        fake.get_tools = AsyncMock(side_effect=get_tools_raises)
-    else:
-        fake.get_tools = AsyncMock(return_value=tools)
-    monkeypatch.setattr(mcp_client, "get_client", lambda: fake)
-    return fake
+    counter = {"n": 0}
+
+    async def fake_discover(name: str, config: dict) -> list:
+        counter["n"] += 1
+        if get_tools_raises is not None:
+            raise get_tools_raises
+        return list(tools)
+
+    monkeypatch.setattr(mcp_client, "_discover_server", fake_discover)
+    return counter
 
 
 # ---------------------------------------------------------------------------
@@ -69,10 +73,11 @@ def test_get_available_tools_returns_discovered_tools(monkeypatch):
 
 
 def test_get_available_tools_caches_after_first_call(monkeypatch):
-    fake = _install_fake_client(monkeypatch, [_fake_tool("only_one")])
+    counter = _install_fake_client(monkeypatch, [_fake_tool("only_one")])
     asyncio.run(mcp_client.get_available_tools())
     asyncio.run(mcp_client.get_available_tools())
-    assert fake.get_tools.await_count == 1
+    # _discover_server called once on first call, second call returns cache
+    assert counter["n"] == 1
 
 
 def test_get_available_tools_returns_empty_list_on_failure(monkeypatch):
@@ -90,13 +95,19 @@ def test_get_available_tools_does_not_cache_a_failure(monkeypatch):
     """A failed discovery shouldn't poison the cache — a retry should
     actually retry, not return the cached empty list forever.
     """
-    fake = _install_fake_client(
-        monkeypatch, [], get_tools_raises=RuntimeError("temporary")
-    )
-    asyncio.run(mcp_client.get_available_tools())
-    # Swap to a successful discovery without resetting cache manually.
-    fake.get_tools = AsyncMock(return_value=[_fake_tool("recovered")])
-    tools = asyncio.run(mcp_client.get_available_tools())
+    recovered = [_fake_tool("recovered")]
+    state = {"fail": True}
+
+    async def swappable_discover(name: str, config: dict) -> list:
+        if state["fail"]:
+            raise RuntimeError("temporary")
+        return list(recovered)
+
+    monkeypatch.setattr(mcp_client, "_discover_server", swappable_discover)
+
+    asyncio.run(mcp_client.get_available_tools())  # fails → not cached
+    state["fail"] = False
+    tools = asyncio.run(mcp_client.get_available_tools())  # retries → succeeds
     assert [t.name for t in tools] == ["recovered"]
 
 

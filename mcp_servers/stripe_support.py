@@ -281,4 +281,29 @@ def list_invoices(name_or_email: str, limit: int = 5) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    mcp.run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Stripe MCP server")
+    parser.add_argument(
+        "--transport",
+        default="stdio",
+        choices=["stdio", "sse"],
+        help="stdio for subprocess mode (default), sse for standalone HTTP service",
+    )
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind (SSE mode only)")
+    parser.add_argument("--port", type=int, default=8001, help="Port to bind (SSE mode only)")
+    args = parser.parse_args()
+
+    if args.transport == "sse":
+        # Set host/port directly on the settings object — env vars are read
+        # at FastMCP instantiation time so os.environ changes are too late.
+        # Also open allowed_hosts so Docker bridge network requests aren't blocked.
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        # Disable DNS rebinding protection — this is an internal service
+        # called by the app, never by a browser, so the protection is
+        # unnecessary and blocks Docker bridge network requests.
+        mcp.settings.transport_security.enable_dns_rebinding_protection = False
+        mcp.run(transport="sse")
+    else:
+        mcp.run()
