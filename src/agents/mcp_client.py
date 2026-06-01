@@ -161,9 +161,15 @@ async def get_available_tools() -> list[BaseTool]:
     server_configs = _build_server_config()
     import asyncio
     results = await asyncio.gather(
-        *[_discover_server(name, cfg) for name, cfg in server_configs.items()]
+        *[_discover_server(name, cfg) for name, cfg in server_configs.items()],
+        return_exceptions=True,
     )
-    all_tools: list[BaseTool] = [t for server_tools in results for t in server_tools]
+    all_tools: list[BaseTool] = []
+    for name, result in zip(server_configs.keys(), results):
+        if isinstance(result, Exception):
+            logger.warning("Server '%s': discovery failed — %s", name, result)
+        else:
+            all_tools.extend(result)
 
     if all_tools:
         _cached_tools = all_tools
