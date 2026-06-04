@@ -229,6 +229,29 @@ services:
       REDIS_PORT: "6379"
       REDIS_AUTH: langfuseredis
 
+  # ===========================================================================
+  # Stripe MCP service — exposes Stripe tools over SSE for the chat agent.
+  # The chat app connects via STRIPE_MCP_URL=http://stripe-mcp:8001/sse.
+  # STRIPE_SECRET_KEY lives here only — the main app never sees it.
+  # Reads STRIPE_SECRET_KEY from your .env file automatically.
+  # ===========================================================================
+  stripe-mcp:
+    build:
+      context: ./mcp_servers
+      dockerfile: Dockerfile
+    container_name: stripe-mcp
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+    environment:
+      - STRIPE_SECRET_KEY=${STRIPE_SECRET_KEY}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',8001)); s.close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 volumes:
   pgdata_chat:
   pgdata_langfuse:
