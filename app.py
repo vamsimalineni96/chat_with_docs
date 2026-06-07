@@ -339,20 +339,12 @@ def list_messages(
 async def upload_pdf_async(
     pdf_name: str,
     collection_name: str,
-    start_page: int = 1,
 ):
-    """Kick off an async PDF ingest.
-
-    `start_page` (default 1) skips pages 0..start_page-1 — useful when
-    resuming after a failure mid-run. Combined with the deterministic
-    per-page doc_id and delete-before-insert in `store_in_milvus`,
-    re-running the same upload (with or without a start_page bump) is
-    safe and does not create duplicate chunks.
-    """
+    """Kick off an async PDF ingest. All pages are indexed."""
     task_id = create_task()
     executor.submit(
         asyncio.run,
-        upload_pdf(pdf_name, collection_name, task_id, start_page=start_page),
+        upload_pdf(pdf_name, collection_name, task_id),
     )
     return {"message": "Processing started", "task_id": task_id}
 

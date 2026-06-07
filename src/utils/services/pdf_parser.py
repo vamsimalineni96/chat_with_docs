@@ -61,12 +61,16 @@ class PDFParser:
 
     @staticmethod
     def clean_page_text(text):
-        """Remove standalone page numbers, headings, and unwanted artifacts."""
+        """Remove standalone page numbers and unwanted artifacts.
+
+        Preserves blank lines as paragraph/section separators so that
+        RecursiveCharacterTextSplitter can split on \\n\\n boundaries.
+        Joining with spaces (old behaviour) collapsed all structure and
+        prevented section-aware chunking.
+        """
         cleaned_lines = []
         for line in text.splitlines():
             stripped = line.strip()
-            if not stripped:
-                continue
 
             if re.match(r"^\d{1,3}$", stripped):
                 continue
@@ -77,7 +81,11 @@ class PDFParser:
 
             cleaned_lines.append(stripped)
 
-        return " ".join(cleaned_lines).strip()
+        # Re-join preserving blank lines as \n\n so the splitter sees
+        # section boundaries. Consecutive blank lines are collapsed to one.
+        result = "\n".join(cleaned_lines)
+        result = re.sub(r"\n{3,}", "\n\n", result)
+        return result.strip()
 
     @staticmethod
     def merge_cross_page_sentences(pages):
@@ -87,7 +95,12 @@ class PDFParser:
         merged = []
         skip_next = False
 
-        CONTINUATION_PATTERN = re.compile(r"[,:;—–\-]$|[^.!?]['\"”’)]?\s*$")
+        # Only merge when a page explicitly ends mid-sentence with a dash or
+        # hyphen. The original broad pattern ([^.!?]$) was designed for
+        # narrative prose and incorrectly merges structured document pages
+        # (product catalogs, policy docs) whose last lines are headers or
+        # list items that don’t end with a period.
+        CONTINUATION_PATTERN = re.compile(r'[—–\-]$')
 
         for i in range(len(pages) - 1):
             if skip_next:

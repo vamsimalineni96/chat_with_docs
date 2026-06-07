@@ -15,7 +15,7 @@ import requests
 import streamlit as st
 
 API_BASE = os.getenv("CHAT_API_BASE", "http://localhost:8000")
-DEFAULT_COLLECTION = os.getenv("MILVUS_COLLECTION_NAME", "docs")
+DEFAULT_COLLECTION = os.getenv("MILVUS_COLLECTION_NAME", "shopco_docs")
 TIMEOUT = int(os.getenv("UI_REQUEST_TIMEOUT", "120"))
 
 
@@ -214,17 +214,12 @@ with st.sidebar:
         value=st.session_state.user_external_id,
         placeholder="e.g. alice, bob, vamsi@example.com",
     )
-    collection = st.text_input(
-        "Milvus collection",
-        value=st.session_state.collection_name,
-    )
-
     if user_input != st.session_state.user_external_id:
         st.session_state.user_external_id = user_input
         st.session_state.conversation_id = None
         st.session_state.messages = []
         st.session_state.debug_by_idx = {}
-    st.session_state.collection_name = collection
+    st.session_state.collection_name = DEFAULT_COLLECTION
 
     st.session_state.debug_mode = st.toggle(
         "🐛 Debug mode",
