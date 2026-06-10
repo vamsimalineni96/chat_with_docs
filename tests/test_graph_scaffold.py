@@ -23,7 +23,6 @@ from src.agents.graph import (
     build_chat_graph,
 )
 
-
 # ---------------------------------------------------------------------------
 # Supervisor stubs — control which path the graph takes
 # ---------------------------------------------------------------------------
@@ -359,7 +358,7 @@ def test_both_plan_does_not_run_single_agent_nodes():
 
 def test_all_paths_run_postprocess():
     """Heuristics fire on every answer leaving the graph."""
-    for supervisor_stub, extra in [
+    for supervisor_stub, _extra in [
         (_stub_supervisor_research, {}),
         (_stub_supervisor_action, {}),
         (_stub_supervisor_both, {}),
