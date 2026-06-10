@@ -58,8 +58,8 @@ async def run_research_agent(
 
     from src.utils.rag_pipeline import (  # noqa: PLC0415
         generate_answer,
-        retrieve_chunks,
         rerank_chunks,
+        retrieve_chunks,
     )
 
     t_start = time.perf_counter()
