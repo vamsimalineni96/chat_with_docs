@@ -23,6 +23,7 @@ from src.agents.graph import (
     build_chat_graph,
 )
 
+
 # ---------------------------------------------------------------------------
 # Supervisor stubs — control which path the graph takes
 # ---------------------------------------------------------------------------
