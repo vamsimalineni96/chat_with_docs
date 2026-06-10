@@ -233,7 +233,7 @@ async def rag_output(
     #   - heuristics passed — don't cache a low-quality response
     if (
         config.TOGGLE_CACHE
-        and result.get("intent") in (None, "in_corpus")
+        and result.get("intent") in (None, "in_corpus", "research")
         and result.get("retrieved")
         and heuristics_report is not None
         and heuristics_report["overall_passed"]

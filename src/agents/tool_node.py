@@ -158,7 +158,7 @@ def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
     return calls
 
 
-@observe(name="call_mcp_tool")
+@observe(name="action_agent")
 async def run_tool_agent(
     question: str,
     *,

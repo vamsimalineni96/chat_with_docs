@@ -1,24 +1,15 @@
-"""Behavior contract for the multi-node chat graph.
+"""Behavior contract for the multi-agent chat graph.
 
 Every test stubs out the entire node set so we never touch the real
 RAG pipeline, the LLM, or Milvus. The graph's job is *orchestration*
-— routing, state threading, conditional edges — and that's what we
+— routing, state threading, parallel execution — and that's what we
 exercise here.
 
-What we want to pin:
-- The happy path runs all four nodes in order (retrieve → rerank →
-  generate → postprocess) and END state has the expected keys.
-- The conditional edge after `retrieve` skips rerank+generate when no
-  chunks came back, going through `canned_no_retrieval` instead.
-- Each node only sees the state fields it should: retrieve reads
-  inputs, rerank reads `retrieved`, generate reads `top_chunks`,
-  postprocess reads `answer`.
-- `debug_flag` propagates through to wherever the real nodes would
-  look for it.
+New topology (feature/multi_agent):
 
-Tests pass `*_fn=stub` per node to short-circuit. Defaults (which
-lazy-import the langchain stack) are never exercised here — that's
-intentional, so this file can collect cleanly in the minimal CI env.
+    supervisor → research | action | parallel_agents | canned_out_of_scope
+    parallel_agents → aggregate
+    all paths → postprocess → END
 """
 
 from __future__ import annotations
@@ -27,43 +18,78 @@ import asyncio
 from typing import Any
 
 from src.agents.graph import (
-    CANNED_NO_RETRIEVAL_ANSWER,
     CANNED_OUT_OF_SCOPE_ANSWER,
     ChatGraphState,
     build_chat_graph,
 )
 
+
 # ---------------------------------------------------------------------------
-# Stub nodes
+# Supervisor stubs — control which path the graph takes
 # ---------------------------------------------------------------------------
 
-
-def _stub_classify_in_corpus(state: ChatGraphState) -> dict[str, Any]:
-    """Default classifier stub — routes everything to the RAG path."""
-    return {"intent": "in_corpus", "intent_reasoning": "stub"}
-
-
-def _stub_classify_out_of_scope(state: ChatGraphState) -> dict[str, Any]:
-    return {"intent": "out_of_scope", "intent_reasoning": "stub out of scope"}
-
-
-def _stub_classify_tool_call(state: ChatGraphState) -> dict[str, Any]:
-    return {"intent": "tool_call", "intent_reasoning": "stub tool call"}
-
-
-def _stub_call_mcp_tool(state: ChatGraphState) -> dict[str, Any]:
-    """Stand-in for the MCP ReAct sub-agent.
-
-    Emits the same shape as the real `_default_call_mcp_tool_node`:
-    an answer string, a tool_calls record, zeroed milvus timings,
-    and `retrieved=[]` so postprocess's citation check has something
-    to read.
-    """
+def _stub_supervisor_research(state: ChatGraphState) -> dict[str, Any]:
     return {
-        "answer": "Order ORD-1001 is shipped via FedEx, ETA 2026-05-27.",
-        "tool_calls": [
-            {"name": "get_order_status", "args": {"order_id": "ORD-1001"}}
-        ],
+        "supervisor_plan": "research",
+        "supervisor_reasoning": "stub: needs documents",
+        "intent": "research",
+        "intent_reasoning": "stub",
+        "debug_info": {} if state.get("debug_flag") else None,
+    }
+
+
+def _stub_supervisor_action(state: ChatGraphState) -> dict[str, Any]:
+    return {
+        "supervisor_plan": "action",
+        "supervisor_reasoning": "stub: needs live tools",
+        "intent": "tool_call",
+        "intent_reasoning": "stub",
+        "debug_info": None,
+    }
+
+
+def _stub_supervisor_both(state: ChatGraphState) -> dict[str, Any]:
+    return {
+        "supervisor_plan": "both",
+        "supervisor_reasoning": "stub: needs both agents",
+        "intent": "both",
+        "intent_reasoning": "stub",
+        "debug_info": None,
+    }
+
+
+def _stub_supervisor_out_of_scope(state: ChatGraphState) -> dict[str, Any]:
+    return {
+        "supervisor_plan": "out_of_scope",
+        "supervisor_reasoning": "stub: unrelated question",
+        "intent": "out_of_scope",
+        "intent_reasoning": "stub",
+        "debug_info": None,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Agent stubs
+# ---------------------------------------------------------------------------
+
+def _stub_research(state: ChatGraphState) -> dict[str, Any]:
+    return {
+        "answer": "Cedric Diggory was a Hufflepuff champion.",
+        "retrieved": [{"text": "Cedric Diggory was a Hufflepuff champion.", "id": "c1"}],
+        "t_milvus_start": 100.0,
+        "t_milvus_end": 100.5,
+        "t_llm_start": 100.6,
+        "t_llm_end": 101.5,
+        "tool_calls": [],
+        "tool_failure_reason": None,
+    }
+
+
+def _stub_action(state: ChatGraphState) -> dict[str, Any]:
+    return {
+        "answer": "Order ORD-1001 is shipped via FedEx.",
+        "tool_calls": [{"name": "get_order_status", "args": {"order_id": "ORD-1001"}}],
+        "tool_failure_reason": None,
         "t_milvus_start": 0.0,
         "t_milvus_end": 0.0,
         "t_llm_start": 200.0,
@@ -72,46 +98,32 @@ def _stub_call_mcp_tool(state: ChatGraphState) -> dict[str, Any]:
     }
 
 
-def _stub_retrieve(state: ChatGraphState) -> dict[str, Any]:
-    """Return one matching chunk so the conditional routes to rerank."""
+def _stub_parallel_agents(state: ChatGraphState) -> dict[str, Any]:
     return {
-        "retrieved": [{"text": "Cedric Diggory was a Hufflepuff champion.", "id": "c1"}],
+        "research_answer": "Wireless Headphones has 42 units in stock.",
+        "action_answer": "Invoice in_xxx created for Jane Smith ($149.99).",
+        "retrieved": [{"text": "Wireless Headphones stock info.", "id": "c2"}],
+        "tool_calls": [{"name": "create_invoice", "args": {}}],
+        "tool_failure_reason": None,
         "t_milvus_start": 100.0,
         "t_milvus_end": 100.5,
-        "debug_info": {} if state.get("debug_flag") else None,
-    }
-
-
-def _stub_retrieve_empty(state: ChatGraphState) -> dict[str, Any]:
-    """Empty retrieval — the conditional should route to canned_no_retrieval."""
-    return {
-        "retrieved": [],
-        "t_milvus_start": 100.0,
-        "t_milvus_end": 100.5,
-        "debug_info": {} if state.get("debug_flag") else None,
-    }
-
-
-def _stub_rerank(state: ChatGraphState) -> dict[str, Any]:
-    return {
-        "top_chunks": state["retrieved"][:1],
-        "t_rerank_start": 100.5,
-        "t_rerank_end": 100.6,
-    }
-
-
-def _stub_generate(state: ChatGraphState) -> dict[str, Any]:
-    return {
-        "answer": "Cedric was a Hufflepuff champion who was killed.",
         "t_llm_start": 100.6,
-        "t_llm_end": 101.5,
+        "t_llm_end": 201.0,
+    }
+
+
+def _stub_aggregate(state: ChatGraphState) -> dict[str, Any]:
+    return {
+        "answer": (
+            "Wireless Headphones has 42 units in stock. "
+            "I've also created invoice in_xxx for Jane Smith at $149.99."
+        ),
+        "t_llm_start": 201.0,
+        "t_llm_end": 202.0,
     }
 
 
 def _stub_postprocess(state: ChatGraphState) -> dict[str, Any]:
-    """Trivially marks the answer as passing — orchestration test, not the
-    real heuristic logic.
-    """
     return {
         "heuristics": {
             "overall_passed": True,
@@ -125,10 +137,11 @@ def _stub_postprocess(state: ChatGraphState) -> dict[str, Any]:
 
 def _all_stubs() -> dict[str, Any]:
     return {
-        "classify_intent_fn": _stub_classify_in_corpus,
-        "retrieve_fn": _stub_retrieve,
-        "rerank_fn": _stub_rerank,
-        "generate_fn": _stub_generate,
+        "supervisor_fn": _stub_supervisor_research,
+        "research_fn": _stub_research,
+        "action_fn": _stub_action,
+        "parallel_agents_fn": _stub_parallel_agents,
+        "aggregate_fn": _stub_aggregate,
         "postprocess_fn": _stub_postprocess,
     }
 
@@ -144,236 +157,225 @@ def _baseline_state() -> ChatGraphState:
 
 
 # ---------------------------------------------------------------------------
-# Happy path
+# Happy path — research plan
 # ---------------------------------------------------------------------------
 
 
 def test_happy_path_runs_all_five_nodes():
-    """classify → retrieve → rerank → generate → postprocess; END state has full shape."""
+    """supervisor → research → postprocess; END state has expected shape."""
     graph = build_chat_graph(**_all_stubs())
     final = asyncio.run(graph.ainvoke(_baseline_state()))
 
-    assert final["intent"] == "in_corpus"
+    assert final["supervisor_plan"] == "research"
     assert final["retrieved"] == [
         {"text": "Cedric Diggory was a Hufflepuff champion.", "id": "c1"}
     ]
-    assert final["top_chunks"] == final["retrieved"]
-    assert final["answer"] == "Cedric was a Hufflepuff champion who was killed."
+    assert final["answer"] == "Cedric Diggory was a Hufflepuff champion."
     assert final["t_milvus_end"] == 100.5
     assert final["t_llm_end"] == 101.5
     assert final["heuristics"]["overall_passed"] is True
 
 
 def test_node_execution_order():
-    """Full in-corpus path: classify → retrieve → rerank → generate → postprocess."""
+    """Research path: supervisor → research → postprocess."""
     visited: list[str] = []
 
     def _track(name: str, stub):
         def _wrapped(state: ChatGraphState) -> dict[str, Any]:
             visited.append(name)
             return stub(state)
-
         return _wrapped
 
     graph = build_chat_graph(
-        classify_intent_fn=_track("classify_intent", _stub_classify_in_corpus),
-        retrieve_fn=_track("retrieve", _stub_retrieve),
-        rerank_fn=_track("rerank", _stub_rerank),
-        generate_fn=_track("generate", _stub_generate),
+        supervisor_fn=_track("supervisor", _stub_supervisor_research),
+        research_fn=_track("research", _stub_research),
+        action_fn=_track("action", _stub_action),
+        parallel_agents_fn=_track("parallel_agents", _stub_parallel_agents),
+        aggregate_fn=_track("aggregate", _stub_aggregate),
         postprocess_fn=_track("postprocess", _stub_postprocess),
     )
     asyncio.run(graph.ainvoke(_baseline_state()))
-    assert visited == [
-        "classify_intent",
-        "retrieve",
-        "rerank",
-        "generate",
-        "postprocess",
-    ]
+    assert visited == ["supervisor", "research", "postprocess"]
 
 
 # ---------------------------------------------------------------------------
-# Conditional routing
+# Routing tests
 # ---------------------------------------------------------------------------
 
 
-def test_empty_retrieval_routes_to_canned_no_retrieval_path():
-    """No chunks back from retrieve → skip rerank + generate, hit
-    canned_no_retrieval. The classifier itself said in_corpus (the
-    common case where the question *looks* like it should be in the
-    docs but retrieval came up empty).
-    """
-    rerank_called: list[bool] = []
-    generate_called: list[bool] = []
+def test_out_of_scope_supervisor_short_circuits():
+    """supervisor=out_of_scope → skip all agents, return canned answer."""
+    research_called: list[bool] = []
+    action_called: list[bool] = []
 
-    def _rerank_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        rerank_called.append(True)
-        return _stub_rerank(state)
+    def _research_should_not_run(state):
+        research_called.append(True)
+        return _stub_research(state)
 
-    def _generate_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        generate_called.append(True)
-        return _stub_generate(state)
+    def _action_should_not_run(state):
+        action_called.append(True)
+        return _stub_action(state)
 
     graph = build_chat_graph(
-        classify_intent_fn=_stub_classify_in_corpus,
-        retrieve_fn=_stub_retrieve_empty,
-        rerank_fn=_rerank_should_not_run,
-        generate_fn=_generate_should_not_run,
+        supervisor_fn=_stub_supervisor_out_of_scope,
+        research_fn=_research_should_not_run,
+        action_fn=_action_should_not_run,
+        parallel_agents_fn=_stub_parallel_agents,
+        aggregate_fn=_stub_aggregate,
         postprocess_fn=_stub_postprocess,
     )
     final = asyncio.run(graph.ainvoke(_baseline_state()))
 
-    assert rerank_called == []
-    assert generate_called == []
-    assert final["answer"] == CANNED_NO_RETRIEVAL_ANSWER
-    # The canned path reuses milvus timings for the LLM slot so
-    # chat_service's metrics log doesn't need to special-case it.
-    assert final["t_llm_start"] == 100.0
-    assert final["t_llm_end"] == 100.5
-    assert final["heuristics"]["overall_passed"] is True
-
-
-def test_out_of_scope_classifier_short_circuits_before_retrieve():
-    """Classifier returns out_of_scope → skip retrieve / rerank /
-    generate entirely. Saves the full RAG cost on questions we
-    know are bogus.
-    """
-    retrieve_called: list[bool] = []
-    rerank_called: list[bool] = []
-    generate_called: list[bool] = []
-
-    def _retrieve_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        retrieve_called.append(True)
-        return _stub_retrieve(state)
-
-    def _rerank_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        rerank_called.append(True)
-        return _stub_rerank(state)
-
-    def _generate_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        generate_called.append(True)
-        return _stub_generate(state)
-
-    graph = build_chat_graph(
-        classify_intent_fn=_stub_classify_out_of_scope,
-        retrieve_fn=_retrieve_should_not_run,
-        rerank_fn=_rerank_should_not_run,
-        generate_fn=_generate_should_not_run,
-        postprocess_fn=_stub_postprocess,
-    )
-    final = asyncio.run(graph.ainvoke(_baseline_state()))
-
-    assert retrieve_called == []
-    assert rerank_called == []
-    assert generate_called == []
-    assert final["intent"] == "out_of_scope"
+    assert research_called == []
+    assert action_called == []
+    assert final["supervisor_plan"] == "out_of_scope"
     assert final["answer"] == CANNED_OUT_OF_SCOPE_ANSWER
-    # Timings stamped to 0 for the short-circuit so chat_service's
-    # metrics log shows the cost saving.
     assert final["t_milvus_end"] == 0.0
     assert final["t_llm_end"] == 0.0
-    # Postprocess STILL runs (heuristics on every answer that leaves
-    # the graph — same invariant as the canned_no_retrieval path).
     assert final["heuristics"]["overall_passed"] is True
 
 
-def test_tool_call_intent_routes_to_mcp_tool_path():
-    """Classifier returns tool_call → skip retrieve / rerank / generate
-    entirely and run the MCP ReAct sub-agent stub. Postprocess still
-    runs heuristics on whatever answer the sub-agent produced.
-    """
-    retrieve_called: list[bool] = []
-    rerank_called: list[bool] = []
-    generate_called: list[bool] = []
+def test_action_plan_routes_to_action_agent():
+    """supervisor=action → skip research, run action agent only."""
+    research_called: list[bool] = []
 
-    def _retrieve_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        retrieve_called.append(True)
-        return _stub_retrieve(state)
-
-    def _rerank_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        rerank_called.append(True)
-        return _stub_rerank(state)
-
-    def _generate_should_not_run(state: ChatGraphState) -> dict[str, Any]:
-        generate_called.append(True)
-        return _stub_generate(state)
+    def _research_should_not_run(state):
+        research_called.append(True)
+        return _stub_research(state)
 
     graph = build_chat_graph(
-        classify_intent_fn=_stub_classify_tool_call,
-        retrieve_fn=_retrieve_should_not_run,
-        rerank_fn=_rerank_should_not_run,
-        generate_fn=_generate_should_not_run,
-        call_mcp_tool_fn=_stub_call_mcp_tool,
+        supervisor_fn=_stub_supervisor_action,
+        research_fn=_research_should_not_run,
+        action_fn=_stub_action,
+        parallel_agents_fn=_stub_parallel_agents,
+        aggregate_fn=_stub_aggregate,
         postprocess_fn=_stub_postprocess,
     )
     final = asyncio.run(graph.ainvoke(_baseline_state()))
 
-    assert retrieve_called == []
-    assert rerank_called == []
-    assert generate_called == []
-    assert final["intent"] == "tool_call"
+    assert research_called == []
+    assert final["supervisor_plan"] == "action"
     assert final["answer"].startswith("Order ORD-1001 is shipped")
     assert final["tool_calls"] == [
         {"name": "get_order_status", "args": {"order_id": "ORD-1001"}}
     ]
-    # Postprocess still ran — the heuristic invariant holds on every
-    # terminal path, MCP branch included.
     assert final["heuristics"]["overall_passed"] is True
 
 
+def test_tool_call_intent_routes_to_mcp_tool_path():
+    """Alias test: action plan sets intent=tool_call for Langfuse tagging."""
+    graph = build_chat_graph(**{**_all_stubs(), "supervisor_fn": _stub_supervisor_action})
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
+    assert final["intent"] == "tool_call"
+
+
 def test_intent_unknown_falls_through_to_rag():
-    """Anything other than the explicit "out_of_scope" verdict routes
-    to RAG. This guards against a bad future intent value (e.g. an
-    unrecognised category) silently breaking the request — the safe
-    bias is to run RAG and let the refusal heuristic catch it
-    downstream if the answer turns out bad.
-    """
+    """Unknown supervisor_plan defaults to research path."""
 
     def _classify_weird(state: ChatGraphState) -> dict[str, Any]:
-        return {"intent": "unknown_category", "intent_reasoning": "stub"}
+        return {
+            "supervisor_plan": "unknown_category",
+            "supervisor_reasoning": "stub",
+            "intent": "unknown_category",
+            "intent_reasoning": "stub",
+            "debug_info": None,
+        }
 
     graph = build_chat_graph(
-        classify_intent_fn=_classify_weird,
-        retrieve_fn=_stub_retrieve,
-        rerank_fn=_stub_rerank,
-        generate_fn=_stub_generate,
-        postprocess_fn=_stub_postprocess,
+        **{**_all_stubs(), "supervisor_fn": _classify_weird}
     )
     final = asyncio.run(graph.ainvoke(_baseline_state()))
-    # The generate node ran; we got a real answer, not the canned one.
-    assert final["answer"] == "Cedric was a Hufflepuff champion who was killed."
+    assert final["answer"] == "Cedric Diggory was a Hufflepuff champion."
 
 
-def test_all_four_terminal_paths_run_postprocess():
-    """Sanity: heuristics fire on every answer leaving the graph,
-    regardless of which branch produced it.
-    """
-    for stubs in (
-        # full RAG path
-        _all_stubs(),
-        # retrieve-empty path
-        {**_all_stubs(), "retrieve_fn": _stub_retrieve_empty},
-        # out-of-scope path
-        {**_all_stubs(), "classify_intent_fn": _stub_classify_out_of_scope},
-        # tool_call path (added in PR #5)
-        {
-            **_all_stubs(),
-            "classify_intent_fn": _stub_classify_tool_call,
-            "call_mcp_tool_fn": _stub_call_mcp_tool,
-        },
-    ):
+# ---------------------------------------------------------------------------
+# "both" plan — parallel execution + aggregation
+# ---------------------------------------------------------------------------
+
+
+def test_both_plan_runs_parallel_agents_and_aggregate():
+    """supervisor=both → parallel_agents → aggregate → postprocess."""
+    visited: list[str] = []
+
+    def _track(name, stub):
+        def _w(state):
+            visited.append(name)
+            return stub(state)
+        return _w
+
+    graph = build_chat_graph(
+        supervisor_fn=_track("supervisor", _stub_supervisor_both),
+        research_fn=_track("research", _stub_research),
+        action_fn=_track("action", _stub_action),
+        parallel_agents_fn=_track("parallel_agents", _stub_parallel_agents),
+        aggregate_fn=_track("aggregate", _stub_aggregate),
+        postprocess_fn=_track("postprocess", _stub_postprocess),
+    )
+    asyncio.run(graph.ainvoke(_baseline_state()))
+    assert visited == ["supervisor", "parallel_agents", "aggregate", "postprocess"]
+
+
+def test_both_plan_state_has_both_answers():
+    """After parallel_agents, state carries research_answer AND action_answer."""
+    graph = build_chat_graph(**{**_all_stubs(), "supervisor_fn": _stub_supervisor_both})
+    final = asyncio.run(graph.ainvoke(_baseline_state()))
+
+    assert final["research_answer"] == "Wireless Headphones has 42 units in stock."
+    assert final["action_answer"] == "Invoice in_xxx created for Jane Smith ($149.99)."
+    assert "42 units" in final["answer"]
+    assert "in_xxx" in final["answer"]
+
+
+def test_both_plan_does_not_run_single_agent_nodes():
+    """When plan=both, the individual research and action nodes don't run."""
+    research_called: list[bool] = []
+    action_called: list[bool] = []
+
+    def _research_should_not_run(state):
+        research_called.append(True)
+        return _stub_research(state)
+
+    def _action_should_not_run(state):
+        action_called.append(True)
+        return _stub_action(state)
+
+    graph = build_chat_graph(
+        supervisor_fn=_stub_supervisor_both,
+        research_fn=_research_should_not_run,
+        action_fn=_action_should_not_run,
+        parallel_agents_fn=_stub_parallel_agents,
+        aggregate_fn=_stub_aggregate,
+        postprocess_fn=_stub_postprocess,
+    )
+    asyncio.run(graph.ainvoke(_baseline_state()))
+    assert research_called == []
+    assert action_called == []
+
+
+# ---------------------------------------------------------------------------
+# Postprocess invariant — runs on every terminal path
+# ---------------------------------------------------------------------------
+
+
+def test_all_paths_run_postprocess():
+    """Heuristics fire on every answer leaving the graph."""
+    for supervisor_stub, extra in [
+        (_stub_supervisor_research, {}),
+        (_stub_supervisor_action, {}),
+        (_stub_supervisor_both, {}),
+        (_stub_supervisor_out_of_scope, {}),
+    ]:
         postprocess_called: list[bool] = []
 
-        # Default-arg binding instead of free-var closure capture — the
-        # for-loop body would otherwise re-bind `postprocess_called` on
-        # each iteration and ruff B023 (rightly) flags it as a latent bug.
         def _track(state, _called=postprocess_called):
             _called.append(True)
             return _stub_postprocess(state)
 
-        graph = build_chat_graph(**{**stubs, "postprocess_fn": _track})
+        graph = build_chat_graph(
+            **{**_all_stubs(), "supervisor_fn": supervisor_stub, "postprocess_fn": _track}
+        )
         asyncio.run(graph.ainvoke(_baseline_state()))
-        assert postprocess_called == [True]
+        assert postprocess_called == [True], f"postprocess not called for {supervisor_stub.__name__}"
 
 
 # ---------------------------------------------------------------------------
@@ -382,70 +384,46 @@ def test_all_four_terminal_paths_run_postprocess():
 
 
 def test_debug_flag_propagates_through_to_debug_info():
-    """When debug_flag=True, retrieve initializes debug_info={}, and downstream
-    nodes can write into it. End-state debug_info contains entries that the
-    nodes added along the way.
-    """
+    """When debug_flag=True, supervisor initializes debug_info={}."""
 
-    def _retrieve_writing_debug(state: ChatGraphState) -> dict[str, Any]:
-        debug_info = {} if state.get("debug_flag") else None
-        if debug_info is not None:
-            debug_info["retrieved_chunks"] = ["chunk_a"]
+    def _supervisor_with_debug(state: ChatGraphState) -> dict[str, Any]:
         return {
-            "retrieved": [{"text": "...", "id": "c1"}],
-            "t_milvus_start": 100.0,
-            "t_milvus_end": 100.5,
-            "debug_info": debug_info,
+            "supervisor_plan": "research",
+            "supervisor_reasoning": "stub",
+            "intent": "research",
+            "intent_reasoning": "stub",
+            "debug_info": {} if state.get("debug_flag") else None,
         }
 
-    def _rerank_writing_debug(state: ChatGraphState) -> dict[str, Any]:
+    def _research_writing_debug(state: ChatGraphState) -> dict[str, Any]:
+        result = _stub_research(state)
         if state.get("debug_info") is not None:
-            state["debug_info"]["reranked_top_k"] = ["chunk_a"]
-        return {
-            "top_chunks": state["retrieved"][:1],
-            "t_rerank_start": 100.5,
-            "t_rerank_end": 100.6,
-        }
+            state["debug_info"]["retrieved_chunks"] = ["chunk_a"]
+        return result
 
     graph = build_chat_graph(
-        classify_intent_fn=_stub_classify_in_corpus,
-        retrieve_fn=_retrieve_writing_debug,
-        rerank_fn=_rerank_writing_debug,
-        generate_fn=_stub_generate,
+        supervisor_fn=_supervisor_with_debug,
+        research_fn=_research_writing_debug,
+        action_fn=_stub_action,
+        parallel_agents_fn=_stub_parallel_agents,
+        aggregate_fn=_stub_aggregate,
         postprocess_fn=_stub_postprocess,
     )
     final = asyncio.run(graph.ainvoke({**_baseline_state(), "debug_flag": True}))
-
     assert final["debug_info"] is not None
     assert final["debug_info"]["retrieved_chunks"] == ["chunk_a"]
-    assert final["debug_info"]["reranked_top_k"] == ["chunk_a"]
 
 
 def test_top_chunks_threads_from_rerank_to_generate():
-    """generate must see what rerank produced, not the pre-rerank retrieved
-    set. We assert by mutation: rerank emits a marker; generate reads it.
-    """
-    sentinel = [{"text": "post-rerank marker", "id": "marker"}]
+    """Research node receives query_vec and collection_name from state."""
+    seen_question: list[str] = []
 
-    def _rerank_emits_marker(state: ChatGraphState) -> dict[str, Any]:
-        return {
-            "top_chunks": sentinel,
-            "t_rerank_start": 100.5,
-            "t_rerank_end": 100.6,
-        }
-
-    seen: list[Any] = []
-
-    def _generate_capturing_top_chunks(state: ChatGraphState) -> dict[str, Any]:
-        seen.append(state["top_chunks"])
-        return _stub_generate(state)
+    def _research_capturing_state(state: ChatGraphState) -> dict[str, Any]:
+        seen_question.append(state["question"])
+        return _stub_research(state)
 
     graph = build_chat_graph(
-        classify_intent_fn=_stub_classify_in_corpus,
-        retrieve_fn=_stub_retrieve,
-        rerank_fn=_rerank_emits_marker,
-        generate_fn=_generate_capturing_top_chunks,
-        postprocess_fn=_stub_postprocess,
+        **{**_all_stubs(), "research_fn": _research_capturing_state}
     )
     asyncio.run(graph.ainvoke(_baseline_state()))
-    assert seen == [sentinel]
+    assert seen_question == ["Who is Cedric Diggory?"]
