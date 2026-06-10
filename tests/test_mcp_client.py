@@ -41,11 +41,22 @@ def _fake_tool(name: str, return_value: Any = "ok"):
 
 
 def _install_fake_client(monkeypatch, tools, *, get_tools_raises=None):
-    """Patch _discover_server so no real MCP subprocess is spawned.
+    """Patch _discover_server and _build_server_config so tests are isolated
+    from real env vars (STRIPE_MCP_URL / STRIPE_SECRET_KEY).
+
+    _build_server_config is fixed to return a single 'test' server so
+    _discover_server is called exactly once per discovery attempt regardless
+    of what keys are set in the environment.
 
     Returns a counter dict with key "n" tracking how many times
     _discover_server was called — used by caching / retry tests.
     """
+    monkeypatch.setattr(
+        mcp_client,
+        "_build_server_config",
+        lambda: {"test_server": {"transport": "stdio"}},
+    )
+
     counter = {"n": 0}
 
     async def fake_discover(name: str, config: dict) -> list:
@@ -103,6 +114,9 @@ def test_get_available_tools_does_not_cache_a_failure(monkeypatch):
             raise RuntimeError("temporary")
         return list(recovered)
 
+    monkeypatch.setattr(
+        mcp_client, "_build_server_config", lambda: {"test_server": {"transport": "stdio"}}
+    )
     monkeypatch.setattr(mcp_client, "_discover_server", swappable_discover)
 
     asyncio.run(mcp_client.get_available_tools())  # fails → not cached

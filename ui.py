@@ -16,7 +16,7 @@ import streamlit as st
 
 API_BASE = os.getenv("CHAT_API_BASE", "http://localhost:8000")
 DEFAULT_COLLECTION = os.getenv("MILVUS_COLLECTION_NAME", "shopco_docs")
-TIMEOUT = int(os.getenv("UI_REQUEST_TIMEOUT", "120"))
+TIMEOUT = int(os.getenv("UI_REQUEST_TIMEOUT", "200"))
 
 
 # --- API helpers --------------------------------------------------------------
@@ -316,14 +316,31 @@ if prompt:
                 st.session_state.conversation_id = resp.get("conversation_id")
                 debug_payload = resp.get("debug")
             except requests.HTTPError as e:
-                detail = ""
-                try:
-                    detail = e.response.json().get("detail", "")
-                except Exception:
-                    detail = e.response.text if e.response is not None else ""
-                answer = f"⚠️ HTTP {e.response.status_code if e.response else '?'}: {detail}"
+                status = e.response.status_code if e.response is not None else 0
+                if status == 504:
+                    answer = (
+                        "⏱️ This request is taking longer than usual — the AI is working "
+                        "on a complex multi-step answer. Please try again in a moment."
+                    )
+                elif status == 409:
+                    answer = "⏳ Another message is being processed. Please wait a moment before sending again."
+                elif status == 502:
+                    answer = "⚠️ The AI service is temporarily unavailable. Please try again."
+                else:
+                    try:
+                        detail = e.response.json().get("detail", "")
+                        if isinstance(detail, dict):
+                            detail = detail.get("message", str(detail))
+                    except Exception:
+                        detail = "An unexpected error occurred."
+                    answer = f"⚠️ Something went wrong: {detail}"
+            except requests.Timeout:
+                answer = (
+                    "⏱️ The request timed out — the AI may still be processing. "
+                    "Please try again in a moment."
+                )
             except requests.RequestException as e:
-                answer = f"⚠️ Request failed: {e}"
+                answer = f"⚠️ Could not reach the server: {e}"
 
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})

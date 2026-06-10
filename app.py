@@ -169,7 +169,9 @@ async def chat(
         else:
             logger.info("Using RAG to answer the question")
 
-        timeout_s = int(os.environ.get("CHAT_TIMEOUT_SECONDS", "90"))
+        # Multi-agent "both" path runs two LLM pipelines + aggregator —
+        # inherently slower than single-agent paths. Default raised to 180s.
+        timeout_s = int(os.environ.get("CHAT_TIMEOUT_SECONDS", "180"))
         try:
             rag_result = await asyncio.wait_for(
                 rag_output(payload, db, conversation, user, query_vec=q_embed),
