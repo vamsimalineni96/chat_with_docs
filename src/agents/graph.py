@@ -101,6 +101,14 @@ class ChatGraphState(TypedDict, total=False):
     # --- written by postprocess ----------------------------------------------
     heuristics: dict[str, Any] | None
 
+    # --- human-in-the-loop ---------------------------------------------------
+    # Set by action_node when a destructive tool (e.g. create_refund) is about
+    # to be called. The graph pauses and surfaces this to the user for approval.
+    # Shape: {"tool": str, "args": dict, "display": str} | None
+    pending_approval: dict[str, Any] | None
+    # Set by the /approve endpoint before graph resumes: "approved" | "rejected"
+    approval_decision: str | None
+
 
 NodeFn = (
     Callable[[ChatGraphState], dict[str, Any]]
@@ -160,14 +168,18 @@ async def _default_research_node(state: ChatGraphState) -> dict[str, Any]:
 async def _default_action_node(state: ChatGraphState) -> dict[str, Any]:
     from src.agents.tool_node import run_tool_agent  # noqa: PLC0415
 
+    # If a previous approval_gate pass set approval_decision, inject it so
+    # run_tool_agent can skip the confirmation step and call the tool directly.
     result = await run_tool_agent(
         state["question"],
         history=state.get("history", []),
+        approval_decision=state.get("approval_decision"),
     )
     return {
         "answer": result["answer"],
         "tool_calls": result.get("tool_calls", []),
         "tool_failure_reason": result.get("tool_failure_reason"),
+        "pending_approval": result.get("pending_approval"),
         "t_milvus_start": 0.0,
         "t_milvus_end": 0.0,
         "t_llm_start": result.get("t_llm_start", 0.0),
@@ -291,6 +303,21 @@ def _default_postprocess_node(state: ChatGraphState) -> dict[str, Any]:
     return {"heuristics": report}
 
 
+def _default_approval_gate_node(state: ChatGraphState) -> dict[str, Any]:
+    """Pass-through node after action/parallel_agents.
+
+    If the action agent detected a destructive tool and set pending_approval,
+    this node does nothing — postprocess will surface it to the caller.
+    If approval_decision is already set (resume path), clear it so the action
+    node re-runs cleanly without re-triggering approval.
+    """
+    if state.get("pending_approval"):
+        # Paused — postprocess will pick up pending_approval and surface it
+        return {}
+    # Resume path: clear the decision so it doesn't affect future turns
+    return {"approval_decision": None}
+
+
 # ---------------------------------------------------------------------------
 # Routing
 # ---------------------------------------------------------------------------
@@ -307,6 +334,16 @@ def _route_after_supervisor(state: ChatGraphState) -> str:
     return "research"
 
 
+def _route_after_approval_gate(state: ChatGraphState) -> str:
+    """If pending_approval is set, skip postprocess and go straight to END
+    so the caller receives the approval request immediately.
+    Otherwise continue to postprocess as normal.
+    """
+    if state.get("pending_approval"):
+        return "pause"
+    return "continue"
+
+
 # ---------------------------------------------------------------------------
 # Graph construction
 # ---------------------------------------------------------------------------
@@ -320,6 +357,7 @@ def build_chat_graph(
     parallel_agents_fn: NodeFn | None = None,
     aggregate_fn: NodeFn | None = None,
     canned_out_of_scope_fn: NodeFn | None = None,
+    approval_gate_fn: NodeFn | None = None,
     postprocess_fn: NodeFn | None = None,
 ) -> CompiledStateGraph:
     g: StateGraph = StateGraph(ChatGraphState)
@@ -330,6 +368,7 @@ def build_chat_graph(
     g.add_node("parallel_agents", parallel_agents_fn or _default_parallel_agents_node)
     g.add_node("aggregate", aggregate_fn or _default_aggregate_node)
     g.add_node("canned_out_of_scope", canned_out_of_scope_fn or _default_canned_out_of_scope_node)
+    g.add_node("approval_gate", approval_gate_fn or _default_approval_gate_node)
     g.add_node("postprocess", postprocess_fn or _default_postprocess_node)
 
     g.set_entry_point("supervisor")
@@ -345,7 +384,13 @@ def build_chat_graph(
     )
 
     g.add_edge("research", "postprocess")
-    g.add_edge("action", "postprocess")
+    # action → approval_gate → (postprocess | END depending on pending_approval)
+    g.add_edge("action", "approval_gate")
+    g.add_conditional_edges(
+        "approval_gate",
+        _route_after_approval_gate,
+        {"continue": "postprocess", "pause": END},
+    )
     g.add_edge("parallel_agents", "aggregate")
     g.add_edge("aggregate", "postprocess")
     g.add_edge("canned_out_of_scope", "postprocess")

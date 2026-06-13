@@ -44,6 +44,26 @@ def list_messages(user_external_id: str, conversation_id: str) -> list[dict[str,
     return r.json().get("messages", [])
 
 
+def post_approve(
+    approval_token: str,
+    decision: str,
+    user_external_id: str,
+    conversation_id: str,
+    selected_payment_intent_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "approval_token": approval_token,
+        "decision": decision,
+        "user_external_id": user_external_id,
+        "conversation_id": conversation_id,
+    }
+    if selected_payment_intent_id:
+        payload["selected_payment_intent_id"] = selected_payment_intent_id
+    r = requests.post(f"{API_BASE}/approve", json=payload, timeout=TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
 def post_chat(
     user_external_id: str,
     question: str,
@@ -205,6 +225,8 @@ if "debug_mode" not in st.session_state:
 # Debug payloads keyed by index in messages list; only present for assistant turns.
 if "debug_by_idx" not in st.session_state:
     st.session_state.debug_by_idx = {}
+if "pending_approval" not in st.session_state:
+    st.session_state.pending_approval = None
 
 
 with st.sidebar:
@@ -303,6 +325,7 @@ if prompt:
 
     with st.chat_message("assistant"):
         debug_payload: dict[str, Any] | None = None
+        pending_approval: dict[str, Any] | None = None
         with st.spinner("Thinking…"):
             try:
                 resp = post_chat(
@@ -315,6 +338,7 @@ if prompt:
                 answer = resp.get("answer", "(no answer)")
                 st.session_state.conversation_id = resp.get("conversation_id")
                 debug_payload = resp.get("debug")
+                pending_approval = resp.get("pending_approval")
             except requests.HTTPError as e:
                 status = e.response.status_code if e.response is not None else 0
                 if status == 504:
@@ -344,9 +368,112 @@ if prompt:
 
         st.markdown(answer)
         st.session_state.messages.append({"role": "assistant", "content": answer})
+        if pending_approval:
+            st.session_state.pending_approval = pending_approval
         if debug_payload:
             assistant_idx = len(st.session_state.messages) - 1
             st.session_state.debug_by_idx[assistant_idx] = debug_payload
             render_debug_panel(debug_payload)
 
     st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# HITL card — rendered at main screen level so it survives rerun.
+# Two shapes:
+#   - kind="approval": Approve/Reject for a single pre-identified payment
+#   - kind="disambig": one button per candidate; clicking IS the approval
+# ---------------------------------------------------------------------------
+if st.session_state.pending_approval:
+    pa = st.session_state.pending_approval
+    kind = pa.get("kind", "approval")
+    st.markdown("---")
+
+    if kind == "disambig":
+        st.markdown("### 🔀 Multiple matching payments")
+        st.info(pa.get("display", "Please pick which payment to refund."))
+        candidates = pa.get("candidates") or []
+        for cand in candidates:
+            cid = cand.get("id", "")
+            amt_cents = cand.get("amount_cents", 0) or 0
+            currency = (cand.get("currency") or "usd").upper()
+            desc = cand.get("description") or "(no description)"
+            label = (
+                f"💸 Refund ${amt_cents/100:.2f} {currency} — {desc}\n\n`{cid}`"
+            )
+            if st.button(label, key=f"disambig_{cid}", use_container_width=True):
+                with st.spinner("Processing refund…"):
+                    try:
+                        resp = post_approve(
+                            approval_token=pa["approval_token"],
+                            decision="approved",
+                            user_external_id=st.session_state.user_external_id,
+                            conversation_id=st.session_state.conversation_id,
+                            selected_payment_intent_id=cid,
+                        )
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": resp.get("answer", "Refund processed successfully.")
+                        })
+                        st.session_state.pending_approval = None
+                        st.rerun()
+                    except requests.RequestException as ex:
+                        st.error(f"Failed: {ex}")
+        if st.button("❌ Cancel — none of the above", use_container_width=True, key="disambig_cancel"):
+            with st.spinner("Cancelling…"):
+                try:
+                    resp = post_approve(
+                        approval_token=pa["approval_token"],
+                        decision="rejected",
+                        user_external_id=st.session_state.user_external_id,
+                        conversation_id=st.session_state.conversation_id,
+                    )
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": resp.get("answer", "Refund cancelled.")
+                    })
+                    st.session_state.pending_approval = None
+                    st.rerun()
+                except requests.RequestException as ex:
+                    st.error(f"Failed: {ex}")
+    else:
+        st.markdown("### ⚠️ Approval Required")
+        st.warning(f"**{pa.get('display', 'Action requires your confirmation')}**")
+
+        col1, col2, col3 = st.columns([1, 1, 2])
+        with col1:
+            if st.button("✅ Approve", type="primary", use_container_width=True):
+                with st.spinner("Processing refund…"):
+                    try:
+                        resp = post_approve(
+                            approval_token=pa["approval_token"],
+                            decision="approved",
+                            user_external_id=st.session_state.user_external_id,
+                            conversation_id=st.session_state.conversation_id,
+                        )
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": resp.get("answer", "Refund processed successfully.")
+                        })
+                        st.session_state.pending_approval = None
+                        st.rerun()
+                    except requests.RequestException as ex:
+                        st.error(f"Failed: {ex}")
+        with col2:
+            if st.button("❌ Reject", use_container_width=True):
+                with st.spinner("Cancelling…"):
+                    try:
+                        resp = post_approve(
+                            approval_token=pa["approval_token"],
+                            decision="rejected",
+                            user_external_id=st.session_state.user_external_id,
+                            conversation_id=st.session_state.conversation_id,
+                        )
+                        st.session_state.messages.append({
+                            "role": "assistant",
+                            "content": resp.get("answer", "Refund cancelled.")
+                        })
+                        st.session_state.pending_approval = None
+                        st.rerun()
+                    except requests.RequestException as ex:
+                        st.error(f"Failed: {ex}")
