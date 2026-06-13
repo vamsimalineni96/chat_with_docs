@@ -1,15 +1,24 @@
 import asyncio
+import os
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from opentelemetry import trace as otel_trace
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from src.utils import config
 from src.utils.api.background_tasks import upload_pdf
-from src.utils.api.schemas import ChatRequest, ChatResponse
+from src.utils.api.schemas import (
+    ApprovalRequest,
+    ApprovalResponse,
+    ChatRequest,
+    ChatResponse,
+    PendingApproval,
+)
 from src.utils.api.task_registry import create_task, get_status
 from src.utils.chat.chat_service import cache_output, rag_output
 from src.utils.db.database import Base, engine, get_db
@@ -22,16 +31,25 @@ from src.utils.errors import (
     InferenceError,
     MilvusError,
 )
+from src.utils.observability import observe, update_current_trace
+from src.utils.services.approval_store import consume_token, create_token
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import MilvusStoreHandler, get_cache_store
 from src.utils.services.redis_lock import ConversationLockError, get_redis_lock
 
+_tracer = otel_trace.get_tracer(__name__)
+
 conversation_service = get_conversation_service()
 redis_service = get_redis_lock()
 embedder = EmbeddingHandler()
 app = FastAPI()
+
+
+@observe(name="embed_question")
+def embed_question(text: str) -> list[float]:
+    return embedder.get_embedding(text=text, input_type="query")
 
 app.add_middleware(
     CORSMiddleware,
@@ -62,15 +80,16 @@ async def chat(
     """
     Multi-user, multi-turn chat endpoint with per-conversation locking.
 
-    Note: the async FastAPI route is *not* decorated with @observe because the
-    langfuse 2.x async decorator doesn't play well with FastAPI route
-    serialization. Trace metadata (user_id, session_id, tags) is attached
-    inside the first synchronous function this route calls — either
-    `cache_output` (cache-hit path) or `rag_output` (RAG path).
+    A root OTel span ("chat_request") is started manually here so that
+    embed_question and rag_output/cache_output all appear as child spans
+    under a single Langfuse trace instead of as separate root traces.
+    The @observe decorator is not used on the route itself because it
+    interferes with FastAPI's response serialization.
     """
     conv_id: str | None = None
     lock_token: str | None = None
-
+    _root_span_ctx = _tracer.start_as_current_span("chat_request")
+    _root_span_ctx.__enter__()
     try:
         # 1) User + conversation setup
         logger.info("Fetching/Creating the user in the database")
@@ -104,6 +123,7 @@ async def chat(
             )
 
         conv_id = str(conversation.id)
+        update_current_trace(user_id=payload.user_external_id, session_id=conv_id)
 
         # 2) Locking
         try:
@@ -125,8 +145,9 @@ async def chat(
         # 3) Embeddings + Cache + RAG
         logger.info("Generating the embedding for question")
         try:
-            q_embed = embedder.get_embedding(
-                text=payload.question, input_type="query"
+            q_embed = await asyncio.to_thread(
+                embed_question,
+                text=payload.question,
             )
         except EmbeddingError as e:
             logger.error("Embedding error in /chat for conv_id=%s: %s", conv_id, e)
@@ -141,7 +162,7 @@ async def chat(
         if config.TOGGLE_CACHE and not payload.debug:
             logger.info("Searching the cache store for similar answer")
             try:
-                cached_answer = cache_output(payload, q_embed)
+                cached_answer = await asyncio.to_thread(cache_output, payload, q_embed)
             except CacheError as e:
                 logger.error("Cache error in /chat for conv_id=%s: %s", conv_id, e)
                 # Treat cache failure as non-fatal: just fall back to RAG
@@ -156,13 +177,59 @@ async def chat(
         else:
             logger.info("Using RAG to answer the question")
 
-        rag_result = rag_output(
-            payload, db, conversation, user, query_vec=q_embed
-        )
+        # Multi-agent "both" path runs two LLM pipelines + aggregator —
+        # inherently slower than single-agent paths. Default raised to 180s.
+        timeout_s = int(os.environ.get("CHAT_TIMEOUT_SECONDS", "180"))
+        try:
+            rag_result = await asyncio.wait_for(
+                rag_output(payload, db, conversation, user, query_vec=q_embed),
+                timeout=timeout_s,
+            )
+        except TimeoutError:
+            logger.error(
+                "RAG pipeline timed out after %ds for conv_id=%s", timeout_s, conv_id
+            )
+            raise HTTPException(
+                status_code=504,
+                detail={
+                    "error_type": "TIMEOUT_ERROR",
+                    "message": "The request took too long to process. Please try again.",
+                },
+            )
+        # HITL: if the action agent detected a destructive tool, pause and
+        # return a pending_approval token the UI renders as Approve/Reject
+        # (kind="approval") or as a candidate picker (kind="disambig").
+        raw_approval = rag_result.get("pending_approval")
+        pending: PendingApproval | None = None
+        if raw_approval:
+            kind = raw_approval.get("kind", "approval")
+            # Store the specific tool and args/candidates so /approve can act
+            # without re-running the ReAct loop (which is fragile and may not
+            # rediscover the same payment intent on retry).
+            paused_state = {
+                "conversation_id": conv_id,
+                "user_external_id": payload.user_external_id,
+                "kind": kind,
+                "tool": raw_approval["tool"],
+                "display": raw_approval["display"],
+                "args": raw_approval.get("args"),
+                "candidates": raw_approval.get("candidates"),
+            }
+            token = create_token(paused_state)
+            pending = PendingApproval(
+                kind=kind,
+                tool=raw_approval["tool"],
+                display=raw_approval["display"],
+                approval_token=token,
+                args=raw_approval.get("args"),
+                candidates=raw_approval.get("candidates"),
+            )
+
         return ChatResponse(
             conversation_id=conv_id,
             answer=rag_result["answer"],
             debug=rag_result.get("debug"),
+            pending_approval=pending,
         )
 
     except ConversationOwnershipError as e:
@@ -245,6 +312,169 @@ async def chat(
                     conv_id,
                     e,
                 )
+        _root_span_ctx.__exit__(None, None, None)
+
+
+@app.post("/approve", response_model=ApprovalResponse)
+async def approve(
+    payload: ApprovalRequest,
+    db: Session = Depends(get_db),
+):
+    """Execute (or cancel) a pending destructive tool action.
+
+    On approval: calls Stripe SDK directly (bypassing the agent's MCP tools).
+    On rejection: stores a cancellation message and returns.
+
+    Wrapped in a manual OTel root span so the whole approval flow shows up
+    in Langfuse as its own trace, tagged so you can correlate with the
+    original chat trace via session_id (conversation_id).
+    """
+    _approval_ctx = _tracer.start_as_current_span("hitl_approval")
+    _approval_ctx.__enter__()
+    try:
+        paused = consume_token(payload.approval_token)
+        if paused is None:
+            raise HTTPException(
+                status_code=410,
+                detail={
+                    "error_type": "APPROVAL_EXPIRED",
+                    "message": "Approval request expired or already used.",
+                },
+            )
+
+        if payload.decision not in ("approved", "rejected"):
+            raise HTTPException(
+                status_code=422,
+                detail="decision must be 'approved' or 'rejected'",
+            )
+
+        kind = paused.get("kind", "approval")
+        tool_name = paused["tool"]
+        args = paused.get("args") or {}
+        candidates = paused.get("candidates") or []
+
+        # Resolve which payment_intent we're acting on:
+        #   - approval flow: stored in args at pause time
+        #   - disambig flow: user picked from candidates; must match one of them
+        if kind == "disambig" and payload.decision == "approved":
+            picked = payload.selected_payment_intent_id or ""
+            valid_ids = {c.get("id") for c in candidates}
+            if not picked or picked not in valid_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail="selected_payment_intent_id must match one of the candidates",
+                )
+            pi_id = picked
+            amount_cents = next(
+                (c.get("amount_cents", 0) for c in candidates if c.get("id") == picked),
+                0,
+            )
+        else:
+            pi_id = args.get("payment_intent_id") or ""
+            amount_cents = args.get("amount", 0)
+
+        # Tag the trace so it's discoverable in Langfuse alongside the
+        # original chat trace (same session_id = conversation_id).
+        try:
+            update_current_trace(
+                name="hitl_approval",
+                user_id=payload.user_external_id,
+                session_id=str(payload.conversation_id),
+                tags=[
+                    f"hitl_decision:{payload.decision}",
+                    f"hitl_tool:{tool_name}",
+                    f"hitl_kind:{kind}",
+                ],
+                metadata={
+                    "payment_intent_id": pi_id,
+                    "amount_cents": amount_cents,
+                    "approval_token_prefix": payload.approval_token[:8],
+                    "candidate_count": len(candidates),
+                },
+            )
+        except Exception as e:
+            logger.debug("HITL approval trace tagging failed (non-fatal): %s", e)
+
+        user = conversation_service.get_or_create_user(db, external_id=payload.user_external_id)
+        conversation = conversation_service.get_conversation_by_id(
+            db, conversation_id=payload.conversation_id, user=user
+        )
+        if conversation is None:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+
+        if payload.decision == "rejected":
+            answer = "Understood — the refund has been cancelled."
+            conversation_service.add_message(
+                db, conversation=conversation, user=user, role="assistant", content=answer
+            )
+            return ApprovalResponse(
+                conversation_id=str(payload.conversation_id),
+                answer=answer,
+            )
+
+        # Approved — execute the refund directly via Stripe SDK in a traced span.
+        reason = args.get("reason") if args else None
+        if not pi_id:
+            answer = "❌ Refund failed: no payment intent ID stored."
+        else:
+            answer = await asyncio.to_thread(
+                _execute_approved_refund, pi_id, reason
+            )
+
+        conversation_service.add_message(
+            db, conversation=conversation, user=user, role="assistant", content=answer
+        )
+        return ApprovalResponse(
+            conversation_id=str(payload.conversation_id),
+            answer=answer,
+        )
+    finally:
+        _approval_ctx.__exit__(None, None, None)
+
+
+@observe(name="stripe_create_refund")
+def _execute_approved_refund(payment_intent_id: str, reason: str | None) -> str:
+    """Issue the Stripe refund and format the user-facing answer.
+
+    Separated into its own @observe'd function so the Stripe API call
+    shows up as a nested span under hitl_approval in Langfuse.
+    """
+    import stripe  # noqa: PLC0415
+    stripe.api_key = os.environ.get("STRIPE_SECRET_KEY", "")
+
+    if not stripe.api_key:
+        return "❌ Refund failed: Stripe key not configured on the app."
+
+    try:
+        params: dict[str, Any] = {"payment_intent": payment_intent_id}
+        if reason:
+            params["reason"] = reason
+        refund = stripe.Refund.create(**params)
+        logger.info("HITL approved refund: %s → %s", payment_intent_id, refund.id)
+
+        # Attach the result to the span so it's visible in Langfuse
+        try:
+            from src.utils.observability import update_current_observation  # noqa: PLC0415
+            update_current_observation(
+                output={
+                    "refund_id": refund.id,
+                    "status": refund.status,
+                    "amount_cents": refund.amount,
+                },
+            )
+        except Exception:
+            pass
+
+        amount_str = f"${refund.amount / 100:.2f}"
+        return (
+            f"✅ Refund processed successfully.\n\n"
+            f"- **Refund ID:** `{refund.id}`\n"
+            f"- **Amount:** {amount_str}\n"
+            f"- **Status:** {refund.status}"
+        )
+    except stripe.StripeError as e:
+        logger.exception("HITL refund failed for %s: %s", payment_intent_id, e)
+        return f"❌ Refund failed: {e.user_message or str(e)}"
 
 
 @app.get("/list_conversations")
@@ -311,20 +541,12 @@ def list_messages(
 async def upload_pdf_async(
     pdf_name: str,
     collection_name: str,
-    start_page: int = 1,
 ):
-    """Kick off an async PDF ingest.
-
-    `start_page` (default 1) skips pages 0..start_page-1 — useful when
-    resuming after a failure mid-run. Combined with the deterministic
-    per-page doc_id and delete-before-insert in `store_in_milvus`,
-    re-running the same upload (with or without a start_page bump) is
-    safe and does not create duplicate chunks.
-    """
+    """Kick off an async PDF ingest. All pages are indexed."""
     task_id = create_task()
     executor.submit(
         asyncio.run,
-        upload_pdf(pdf_name, collection_name, task_id, start_page=start_page),
+        upload_pdf(pdf_name, collection_name, task_id),
     )
     return {"message": "Processing started", "task_id": task_id}
 

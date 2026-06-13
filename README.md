@@ -72,6 +72,126 @@ python -m evals.latency.latency_report --source live --days 7 \
 
 Both cost and latency also run as nightly GitHub Actions workflows; see [`.github/workflows/`](.github/workflows/).
 
+## Stripe MCP Integration (`feature/chat_stripe`)
+
+This branch adds a second answer path alongside RAG: the chat graph can now route
+questions to real Stripe APIs via an MCP tool-call agent.
+
+### How it fits together
+
+```
+User question
+      │
+      ▼
+intent classifier  ──► "tool_call" ──► ReAct agent
+                                            │
+                          ┌─────────────────┴──────────────────┐
+                          ▼                                     ▼
+               shopping_support.py                   stripe_support.py
+               (fake orders / inventory)             (real Stripe API)
+                    stdio subprocess                  SSE Docker container
+```
+
+The `MultiServerMCPClient` in [`src/agents/mcp_client.py`](src/agents/mcp_client.py)
+connects to both servers simultaneously and merges their tools into one flat list.
+The ReAct agent sees all tools and picks the right one — it never knows or cares
+which server a tool came from.
+
+### What is `stripe_support.py`?
+
+**Stripe is not an MCP server.** Stripe is just a payments company with a REST API.
+
+`mcp_servers/stripe_support.py` is an MCP server that **you own and run**. It sits
+in the middle and translates between the two worlds:
+
+```
+ReAct agent  →  MCP tool call (list_customers)
+                      ↓
+             stripe_support.py   ← YOUR MCP server (translator)
+                      ↓
+             GET api.stripe.com/v1/customers   ← Stripe REST API
+```
+
+It lives in `mcp_servers/` because it IS an MCP server — one you built.
+
+### stdio vs SSE
+
+These are two ways the app and the MCP server talk to each other.
+
+| | stdio | SSE |
+|---|---|---|
+| How | stdin/stdout (pipe) | HTTP over network |
+| Lives | subprocess inside the app process | separate Docker container |
+| When it dies | with the app | independently |
+| Use for | local dev | production |
+
+**Dev mode** (`STRIPE_SECRET_KEY` set, no `STRIPE_MCP_URL`):
+The app spawns `stripe_support.py` as a child process. Simple, no Docker needed.
+
+**Production mode** (`STRIPE_MCP_URL` set):
+`stripe_support.py` runs as a standalone Docker container. The app connects to it
+over HTTP. Multiple app instances can share one MCP container. The Stripe key lives
+only on the MCP container — the app never sees it.
+
+### When to write your own MCP server
+
+| Situation | What to do |
+|---|---|
+| The company published an official MCP server and it works well | Use it directly (Option 2) |
+| Community built one and it's focused enough | Use it (modelcontextprotocol.io/servers) |
+| No server exists, or the official one is too bloated / slow | Write your own |
+
+We tried Stripe's official `@stripe/mcp` npm package first. It exposed 25+ generic
+tools with enormous schemas — the Llama model timed out trying to reason about all
+of them. Our custom `stripe_support.py` has 8 focused tools with small, clear
+docstrings. The model picks the right one instantly.
+
+**Rule:** official servers are great for broad integrations. For production use cases
+you almost always end up writing your own because you need specific behavior,
+specific tool names, and small schemas the model can reason about quickly.
+
+### Running the Stripe MCP service
+
+**Dev (stdio):**
+```bash
+# Just set the key in .env — the app spawns the server automatically
+STRIPE_SECRET_KEY=rk_test_...
+```
+
+**Production (SSE Docker container):**
+```bash
+# Build once
+docker build -t stripe-mcp -f mcp_servers/Dockerfile mcp_servers/
+
+# Start (reads STRIPE_SECRET_KEY from .env automatically)
+./mcp_servers/run.sh
+
+# Point the app at it
+STRIPE_MCP_URL=http://localhost:8001/sse
+```
+
+### Seeding test data
+
+```bash
+# Uses sk_test_ (full secret key) — needed to confirm payments in test mode
+STRIPE_SECRET_KEY=sk_test_... python scripts/seed_stripe.py
+```
+
+Creates: 3 customers (John Doe, Jane Smith, Bob Wilson), 3 products, 2 confirmed
+payments, 1 declined payment (Bob), 1 open invoice.
+
+### Test conversations
+
+```
+"I'm john.doe@example.com, what did I pay for recently?"
+"Jane Smith wants a refund for her headphones purchase"
+"Bob Wilson says his payment failed — what happened?"
+"Show me Jane's open invoices"
+"Is the Wireless Headphones in stock and what does it cost in Stripe?"
+```
+
+---
+
 ## Key endpoints
 
 - `POST /chat` — multi-turn chat, per-conversation Redis lock, semantic cache + RAG fallback.

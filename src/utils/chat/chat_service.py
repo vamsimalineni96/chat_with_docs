@@ -1,9 +1,10 @@
+import asyncio
 import time
 
+from src.agents.graph import get_chat_graph
 from src.utils import config
-from src.utils.errors import CacheError, ConversationServiceError, InferenceError
+from src.utils.errors import CacheError, ConversationServiceError, InferenceError, NodeError
 from src.utils.observability import observe, update_current_trace
-from src.utils.rag_pipeline import answer_question
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.logger_config import logger
 from src.utils.services.milvus_store import get_cache_store
@@ -54,7 +55,7 @@ def cache_output(payload, q_embed):
 
 
 @observe(name="rag_output")
-def rag_output(
+async def rag_output(
     payload,
     db,
     conversation,
@@ -90,8 +91,9 @@ def rag_output(
     logger.info("Accessing recent messages from the database")
     try:
         t_db_start = time.perf_counter()
-        recent_msgs = converstion_service.get_recent_messages(
-            db, conversation, limit=config.HISTORY_LIMIT, user=user
+        recent_msgs = await asyncio.to_thread(
+            converstion_service.get_recent_messages,
+            db, conversation, limit=config.HISTORY_LIMIT, user=user,
         )
         history_for_llm = [{"role": m.role, "content": m.content} for m in recent_msgs]
     except ConversationServiceError:
@@ -102,7 +104,8 @@ def rag_output(
 
     logger.info("Storing the new message into the database")
     try:
-        converstion_service.add_message(
+        await asyncio.to_thread(
+            converstion_service.add_message,
             db,
             conversation=conversation,
             user=user,
@@ -116,53 +119,122 @@ def rag_output(
         logger.exception("Unexpected error while storing user message: %s", e)
         raise ConversationServiceError("Failed to store user message.") from e
 
-    logger.info("Running RAG pipeline to generate answer")
+    logger.info("Invoking chat graph to generate answer")
     try:
-        result = answer_question(
-            question=payload.question,
-            query_vec=query_vec,
-            collection_name=payload.collection_name,
-            history=history_for_llm,
-            debug=getattr(payload, "debug", False),
+        # The graph orchestrates: retrieve → (rerank → generate | canned_no_retrieval)
+        # → postprocess (heuristics). Each stage is its own @observe'd span in
+        # Langfuse. See src/agents/graph.py for the topology.
+        result = await get_chat_graph().ainvoke(
+            {
+                "question": payload.question,
+                "query_vec": query_vec,
+                "collection_name": payload.collection_name,
+                "history": history_for_llm,
+                "debug_flag": getattr(payload, "debug", False),
+            }
         )
     except InferenceError:
-        # Already wrapped appropriately
         raise
+    except NodeError as e:
+        logger.exception("Graph node %s failed: %s", e.stage, e)
+        try:
+            update_current_trace(tags=[f"failed_stage:{e.stage}"])
+        except Exception:
+            pass
+        raise InferenceError(f"{e.stage} node failed.") from e
     except Exception as e:
-        logger.exception("Unexpected error from RAG pipeline: %s", e)
-        raise InferenceError("Unexpected error from RAG pipeline.") from e
+        logger.exception("Unexpected error from chat graph: %s", e)
+        raise InferenceError("Unexpected error from chat graph.") from e
 
     answer = result["answer"]
-    t_milvus_start = result["t_milvus_start"]
-    t_milvus_end = result["t_milvus_end"]
-    t_llm_start = result["t_llm_start"]
-    t_llm_end = result["t_llm_end"]
-    debug_info = result.get("debug")
+    pending_approval = result.get("pending_approval")
+    t_milvus_start = result.get("t_milvus_start", 0.0)
+    t_milvus_end = result.get("t_milvus_end", 0.0)
+    t_llm_start = result.get("t_llm_start", 0.0)
+    t_llm_end = result.get("t_llm_end", 0.0)
+    debug_info = result.get("debug_info")
 
-    # Heuristics evaluation is computed in the RAG pipeline; tagging
-    # happens *here* because this is the trace-root span. Tagging from
-    # inside answer_question (a child observation) attaches the tag to
-    # the child instead of bubbling up to the trace, making it
-    # invisible in the Langfuse trace-level tag view.
+    # Trace-root tagging: the @observe(name="rag_output") span is the
+    # trace root, so update_current_trace from here lands at the trace
+    # level (where Langfuse's tag filter looks). Tagging from inside a
+    # child observation tags the child instead — see PR #44 history.
+    # We batch the heuristic + intent tags into one call.
+    trace_tags: list[str] = []
+
+    retrieved_count = len(result.get("retrieved") or [])
+    trace_tags.append(f"retrieved_count:{retrieved_count}")
+
+    intent = result.get("intent")
+    if intent:
+        trace_tags.append(f"intent:{intent}")
+
+    # tool_call branch only — one tag per MCP tool the ReAct sub-agent
+    # invoked. Tagging by name (not by name+args) keeps Langfuse's tag
+    # filter usable for "show me all sessions that hit get_order_status".
+    tool_calls = result.get("tool_calls") or []
+    for tc in tool_calls:
+        name = tc.get("name")
+        if name:
+            trace_tags.append(f"tool:{name}")
+
+    tool_failure_reason = result.get("tool_failure_reason")
+    if tool_failure_reason:
+        trace_tags.append(f"mcp_failure:{tool_failure_reason}")
+
     heuristics_report = result.get("heuristics")
     if heuristics_report is not None:
-        tags = [f"heuristic_pass:{str(heuristics_report['overall_passed']).lower()}"]
+        trace_tags.append(
+            f"heuristic_pass:{str(heuristics_report['overall_passed']).lower()}"
+        )
         if not heuristics_report["overall_passed"]:
-            tags.append(
+            trace_tags.append(
                 "heuristic_failed:" + ",".join(heuristics_report["failed_checks"])
             )
+
+    if trace_tags:
         try:
-            update_current_trace(tags=tags)
+            update_current_trace(
+                tags=trace_tags,
+                metadata={
+                    "intent_reasoning": (result.get("intent_reasoning") or "")[:100]
+                },
+            )
         except Exception as e:
             logger.debug(
-                "update_current_trace from heuristics tagging failed (non-fatal): %s",
+                "update_current_trace from chat_service tagging failed (non-fatal): %s",
                 e,
             )
+
+    # When paused for HITL approval, skip storing the assistant message —
+    # the real answer will be stored after the user approves/rejects.
+    if pending_approval:
+        kind = pending_approval.get("kind", "approval")
+        args = pending_approval.get("args") or {}
+        candidates = pending_approval.get("candidates") or []
+        try:
+            update_current_trace(
+                tags=[
+                    "hitl:pending",
+                    f"hitl_tool:{pending_approval.get('tool', 'unknown')}",
+                    f"hitl_kind:{kind}",
+                ],
+                metadata={
+                    "hitl_pending": True,
+                    "hitl_kind": kind,
+                    "hitl_payment_intent_id": args.get("payment_intent_id", ""),
+                    "hitl_amount_cents": args.get("amount", 0),
+                    "hitl_candidate_count": len(candidates),
+                },
+            )
+        except Exception as e:
+            logger.debug("HITL trace tagging failed (non-fatal): %s", e)
+        return {"answer": answer, "debug": debug_info, "pending_approval": pending_approval}
 
     logger.info("Storing the chatbot's reply to the user query")
     try:
         t_save_start = time.perf_counter()
-        converstion_service.add_message(
+        await asyncio.to_thread(
+            converstion_service.add_message,
             db,
             conversation=conversation,
             user=user,
@@ -177,6 +249,40 @@ def rag_output(
         raise ConversationServiceError("Failed to store assistant message.") from e
 
     t1 = time.perf_counter()
+
+    # Cache write-back: store this Q/A pair so future identical (or
+    # near-identical) questions return instantly from cache_output.
+    # Guard conditions:
+    #   - cache is enabled globally
+    #   - answer came from RAG (in_corpus), not tool_call/out_of_scope/canned
+    #   - retrieval actually found chunks (canned_no_retrieval path has none)
+    #   - heuristics passed — don't cache a low-quality response
+    if (
+        config.TOGGLE_CACHE
+        and result.get("intent") in (None, "in_corpus", "research")
+        and result.get("retrieved")
+        and heuristics_report is not None
+        and heuristics_report["overall_passed"]
+    ):
+        try:
+            chunk_ids = [
+                c.get("id")
+                for c in (result.get("retrieved") or [])
+                if c.get("id") is not None
+            ]
+            cache_service.put_entry(
+                question_text=payload.question,
+                query_vec=query_vec,
+                answer_text=answer,
+                context_chunk_ids=chunk_ids,
+                model_name=config.LLM_MODEL,
+                prompt_version=config.PROMPT_VERSION,
+            )
+            logger.info("Wrote Q/A pair to cache for conv_id=%s", conversation.id)
+        except CacheError as e:
+            logger.warning("Cache write-back failed (non-fatal): %s", e)
+        except Exception as e:
+            logger.warning("Unexpected error during cache write-back (non-fatal): %s", e)
 
     logger.info(
         "RAG_PIPELINE_METRICS | conv_id=%s | domain=%s | "
@@ -198,5 +304,7 @@ def rag_output(
             "db_save": (t_save_end - t_save_start) * 1000,
             "total": (t1 - t0) * 1000,
         }
+        if tool_calls:
+            debug_info["tool_calls"] = tool_calls
 
-    return {"answer": answer, "debug": debug_info}
+    return {"answer": answer, "debug": debug_info, "pending_approval": None}

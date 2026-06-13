@@ -25,27 +25,18 @@ def _page_doc_id(pdf_name: str, page_idx: int) -> str:
 async def upload_pdf(
     pdf_name: str,
     collection_name: str,
-    task_id,
-    start_page: int = 1,
+    task_id: str,
 ):
-    """Parse a PDF and index it page-by-page into Milvus.
-
-    `start_page` lets you resume after a failure without re-ingesting
-    pages that already landed. Default 1 preserves the pre-existing
-    behaviour (skip page 0, ingest from page 1 onward).
-    """
+    """Parse a PDF and index all pages into Milvus."""
     vector_store = MilvusStoreHandler(collection_name=collection_name)
     pdf_path = os.path.join(config.PDF_DIR, pdf_name)
 
     try:
         parser = PDFParser(pdf_path)
         pages = parser.parse_pdf()
-        logger.info(
-            "Total pages parsed from PDF '%s': %d (starting at page %d)",
-            pdf_path, len(pages), start_page,
-        )
+        logger.info("Total pages parsed from PDF '%s': %d", pdf_path, len(pages))
 
-        for i in range(start_page, len(pages)):
+        for i in range(len(pages)):
             long_text = pages[i].get("text")
             vector_store.store_in_milvus(
                 text=long_text,

@@ -1,0 +1,23 @@
+# Aggregator prompt — synthesizes answers from research + action agents
+# into one coherent user-facing response.
+#
+# Only used when supervisor plan is "both".
+
+version: v1
+
+system_prompt: |
+  You are combining answers from two specialized agents into one clear response.
+  Write as a single customer-support reply — do NOT mention "research agent",
+  "action agent", or any internal system details.
+  Be concise, friendly, and complete.
+
+user_prompt: |
+  Customer question: {question}
+
+  Research agent answer:
+  {research_answer}
+
+  Action agent answer:
+  {action_answer}
+
+  Write a single, unified response that addresses the full question:

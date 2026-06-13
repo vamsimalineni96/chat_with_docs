@@ -1,3 +1,4 @@
+import re
 import time
 import uuid
 from datetime import datetime
@@ -209,12 +210,30 @@ class MilvusStoreHandler:
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            separators=["\n\n", ".", "!", "?", " "],
+            separators=["\n\n", "\n", ".", "!", "?", " "],
         )
         chunks = splitter.split_text(text)
         if not chunks:
             logger.warning("No chunks produced from text; skipping insert.")
             return
+
+        # Section header injection — prepend the nearest section heading to
+        # each chunk so retrieval has context even when the query matches
+        # body text that doesn't mention the section name.
+        # A heading is: short (<60 chars), no trailing period, all-caps or
+        # title-cased, not a bullet point.
+        _heading_re = re.compile(r"^(?![-•*])(?:[A-Z][A-Z\s&/]{2,}|[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,5})$")
+        current_heading: str | None = None
+        enriched_chunks: list[str] = []
+        for chunk in chunks:
+            first_line = chunk.strip().splitlines()[0].strip() if chunk.strip() else ""
+            if len(first_line) < 60 and not first_line.endswith(".") and _heading_re.match(first_line):
+                current_heading = first_line
+            if current_heading and not chunk.strip().startswith(current_heading):
+                enriched_chunks.append(f"{current_heading}\n{chunk.strip()}")
+            else:
+                enriched_chunks.append(chunk)
+        chunks = enriched_chunks
 
         metadatas = [
             {"doc_id": doc_id, "source": source, "chunk_order": order}

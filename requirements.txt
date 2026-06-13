@@ -4,6 +4,16 @@ langchain-community==0.3.30
 langchain-nvidia-ai-endpoints==0.3.19
 langchain-milvus==0.2.1
 langchain_text_splitters==0.3.11
+# langgraph 0.6.x is the minimum that ships the `langgraph._internal`
+# module that `langgraph.prebuilt.create_react_agent` (used by the MCP
+# tool node in PR #5) imports from. Pinning `langgraph-prebuilt`
+# explicitly too — its METADATA omits a `langgraph` lower bound, so
+# pip is free to pair the wrong versions otherwise (saw a 0.4.10 + 1.0.1
+# mismatch on first install).
+langgraph==0.6.11
+langgraph-prebuilt==0.6.5
+langchain-mcp-adapters==0.1.14
+mcp==1.27.1
 uvicorn==0.35.0
 chromadb==1.0.20
 fastapi==0.116.1
@@ -17,3 +27,4 @@ streamlit>=1.39.0
 requests>=2.32.5
 langfuse>=4.6.1,<5
 tiktoken==0.7.0
+stripe==15.2.0

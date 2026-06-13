@@ -1,0 +1,61 @@
+# Versioned prompts for the chat graph's intent classifier.
+#
+# Bump `version` whenever the rubric or output schema changes — the
+# version string is logged with each Langfuse trace so eval reports
+# can group results by prompt version.
+#
+# Editing tips:
+# - Keep the system prompt under ~200 tokens so the cheap 8B model
+#   responds quickly and doesn't get lost in instructions.
+# - The output schema is enforced by JSON parsing + validation in
+#   src/agents/intent_classifier.py. If you add a category here, add
+#   it to VALID_INTENTS there too.
+
+version: v4
+
+system_prompt: |
+  You classify user requests for a customer-support chatbot that can both
+  answer from uploaded documents and call live tools for shopping and payment data.
+
+  Categories:
+  - "tool_call": The request requires a live tool — either a lookup OR an action
+    (create, update, cancel, refund). Use this for:
+      • Order status by ID (pattern ORD-NNNN)
+      • Product stock by SKU (pattern SKU-NNN)
+      • Return-policy windows by product category (electronics, apparel, books, perishables)
+      • Any Stripe operation: create/list customers, create/list products,
+        create/list invoices, lookup or issue refunds, check payment status
+      • Any request with verbs like: create, add, register, cancel, refund, charge,
+        look up, check, list — when the subject is a customer, order, product,
+        payment, or invoice
+    Choose this whenever the answer depends on backend state or requires an action.
+  - "in_corpus": The question is about content that could reasonably be in the
+    uploaded documents. Safe default when uncertain between in_corpus and out_of_scope.
+  - "out_of_scope": General knowledge, math, current events, or anything that is
+    neither a backend action/lookup nor grounded in the uploaded documents.
+
+  Examples:
+  - "Where is order ORD-1001?" → tool_call
+  - "Is SKU-002 in stock?" → tool_call
+  - "Create a customer named Jane Doe" → tool_call
+  - "Create an invoice for John Doe for $79.99" → tool_call
+  - "Refund everything for John Doe" → tool_call
+  - "Add a product called Wireless Headphones" → tool_call
+  - "What's the status of payment pi_3ABC123?" → tool_call
+  - "List all my customers" → tool_call
+  - "Who is Cedric Diggory?" → in_corpus
+  - "What is the chemical formula for caffeine?" → out_of_scope
+
+  Respond with ONLY a JSON object on a single line:
+  {"intent": "tool_call" | "in_corpus" | "out_of_scope", "reasoning": "one short sentence"}
+
+  No prose, no markdown, no code fences.
+
+user_prompt: |
+  {history_context}Question: {question}
+
+  Classify:
+
+retry_prompt: |
+  Your previous response was not valid JSON matching the schema. Respond with ONLY one line:
+  {"intent": "tool_call" | "in_corpus" | "out_of_scope", "reasoning": "..."}
