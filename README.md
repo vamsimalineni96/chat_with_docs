@@ -1,108 +1,41 @@
-# Chat-with-docs!
+# Multi-agent customer-support chatbot
 
 [![CI](https://github.com/vamsimalineni96/chat_with_docs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/vamsimalineni96/chat_with_docs/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/python-3.12-blue)
 
-A RAG service over a document corpus (Milvus hybrid retrieval → cross-encoder rerank → NVIDIA NIM chat completion, behind a FastAPI app), built primarily as a portfolio piece demonstrating the three-pillar observability framework articulated by [Pooja Palod in the *Data Journey* series](https://datajourney24.substack.com/) — Cost, Quality, and Latency.
+A production-pattern agentic chatbot that grounds answers in a document corpus
+(RAG) **and** takes real action against live Stripe APIs — with an architecturally
+unbypassable human-in-the-loop guarding every destructive action.
 
-The PDF corpus under `pdfs/` (Harry Potter 4 and 7) is a placeholder used to exercise the pipeline end-to-end while the observability surface is built out.
+Built on LangGraph (supervisor + ReAct sub-agents), MCP tool servers, Milvus
+hybrid retrieval, FastAPI, and Streamlit. Every retrieval, tool call, and
+approval decision is traced in Langfuse.
 
-## What makes this repo interesting
-
-Three pillars, each with a measurement script, a CI/cron path, and dated artifacts committed back to the repo. **The reports are the work.**
-
-| Pillar | What it answers | How |
-|---|---|---|
-| **Cost** | What does a task cost? | [`evals/cost/cost_report.py`](evals/cost/cost_report.py) → dated [`docs/reports/cost_*.md`](docs/reports/) (nightly cron) |
-| **Quality** | Are answers grounded, accurate, and complete? | [`evals/quality/run_eval.py`](evals/quality/run_eval.py) + LLM judge → dated [`docs/eval-reports/eval_*.md`](docs/eval-reports/). Schema gated on every PR. |
-| **Latency** | Where is time being spent? Where are the tails? | [`evals/latency/latency_report.py`](evals/latency/latency_report.py) → dated [`docs/reports/latency_*.md`](docs/reports/) (nightly cron) |
-
-The story of how each pillar was built, in order: [`docs/PROGRESS.md`](docs/PROGRESS.md). The design rationale and gap audit: [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md). The latest-numbers index: [`docs/dashboards/index.md`](docs/dashboards/index.md).
-
-Two reliability behaviours layered under the latency pillar:
-
-- **Retries with exponential backoff on every NVIDIA call** — read path (`/chat`) via [`src/utils/services/retry.py`](src/utils/services/retry.py) and write path (PDF ingest) via [`src/utils/services/milvus_store.py`](src/utils/services/milvus_store.py). One transient 502/503 from the upstream load balancer no longer surfaces as a 5xx.
-- **Idempotent ingestion** — deterministic per-page `doc_id` + delete-before-insert means re-running an ingest after a mid-stream failure doesn't accumulate duplicate chunks in Milvus.
-
-## Stack
-
-- **API**: FastAPI ([`app.py`](app.py)) — chat, async PDF ingestion, admin endpoints.
-- **UI**: Streamlit ([`ui.py`](ui.py)) — multi-user chat with a debug panel (retrieval, rerank, prompt, timings).
-- **Vector store**: Milvus 2.5 with hybrid retrieval (dense embeddings + BM25, fused via RRF).
-- **Reranker**: cross-encoder rerank over the fused candidates.
-- **Embeddings / LLM**: NVIDIA AI endpoints via LangChain.
-- **State**: Postgres (users / conversations / messages), Redis (per-conversation lock + semantic cache key).
-- **Observability**: Langfuse v4 — traces, prompts, timings. Data shaped into the dated reports above.
-
-## Layout
-
-- [`app.py`](app.py), [`ui.py`](ui.py) — FastAPI routes + Streamlit UI.
-- [`src/`](src/) — services: embedder, PDF parser, Milvus store, conversation store, Redis lock, chat orchestration, retry helper, prompts.
-- [`eval/`](eval/) — Q&A dataset, retrieval metrics, LLM judge, end-to-end runner.
-- [`scripts/`](scripts/) — cost + latency aggregators, pricing table, locust workload.
-- [`docs/`](docs/) — observability design, progress log, dashboards index, dated reports.
-- [`tests/`](tests/) — 82 unit tests covering the cost/latency/eval/retry pipelines (no real LLM, no network).
-- [`docker-compose.yml`](docker-compose.yml) — Milvus (+etcd, MinIO), Postgres, Redis.
-
-## Run
-
-```bash
-docker compose up -d                          # Milvus, Postgres, Redis
-pip install -r requirements.txt
-uvicorn app:app --reload                      # API on :8000
-streamlit run ui.py                           # UI on :8501
-```
-
-Langfuse: configured against Langfuse Cloud — set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` in `.env`. See [`.env.example`](.env.example).
-
-## Generating reports locally
-
-```bash
-# Quality — runs the 18-question eval against the live app and writes a dated report.
-python -m evals.quality.run_eval --output docs/eval-reports/eval_$(date +%Y-%m-%d).md
-
-# Cost — pulls last 7 days of Langfuse traces, attributes by task + stage.
-python -m evals.cost.cost_report --source live --days 7 \
-  --output docs/reports/cost_$(date +%Y-%m-%d).md
-
-# Latency — pulls last 7 days of Langfuse traces, computes p50/p95/p99.
-python -m evals.latency.latency_report --source live --days 7 \
-  --output docs/reports/latency_$(date +%Y-%m-%d).md
-```
-
-Both cost and latency also run as nightly GitHub Actions workflows; see [`.github/workflows/`](.github/workflows/).
-
-## Multi-agent + Stripe MCP Integration
-
-The chat graph is a multi-agent supervisor that routes each question to the right
-specialist, then optionally takes real action against Stripe.
-
-### Multi-agent orchestration
+## What it does
 
 An intent classifier ([`src/agents/intent_classifier.py`](src/agents/intent_classifier.py))
-labels every question, and a supervisor ([`src/agents/supervisor.py`](src/agents/supervisor.py))
+labels each question, and a supervisor ([`src/agents/supervisor.py`](src/agents/supervisor.py))
 routes it down one of four paths:
 
 | Intent | Path | What it does |
 |---|---|---|
-| `research` | RAG | Hybrid retrieval over the doc corpus, rerank, LLM answer |
-| `action` | Tool ReAct agent | Calls MCP tools (Stripe, shopping) to *do* something |
+| `research` | RAG | Hybrid retrieval (dense + BM25 → RRF) over the doc corpus, cross-encoder rerank, LLM answer |
+| `action` | Tool ReAct agent | Calls MCP tools to *do* something — look up customers, list payments, create invoices, request refunds |
 | `both` | RAG + Tool, then aggregator | Runs both branches in parallel, fuses answers |
 | `out_of_scope` | Canned refusal | Heuristic-gated short-circuit |
 
-The full topology lives in [`src/agents/graph.py`](src/agents/graph.py). Each branch
-is its own `@observe`'d Langfuse span so the routing decision and every downstream
-call show up under one trace.
+Topology lives in [`src/agents/graph.py`](src/agents/graph.py). Every node is its
+own `@observe`'d Langfuse span — one trace per request, end-to-end.
 
-### How the action path fits together
+## The action path: MCP + Stripe
 
 ```
 User question
       │
       ▼
-intent classifier  ──► "action" / "both" ──► ReAct tool agent
-                                                    │
-                          ┌─────────────────────────┴──────────────────┐
+intent classifier ──► "action" / "both" ──► ReAct tool agent
+                                                  │
+                          ┌───────────────────────┴────────────────────┐
                           ▼                                             ▼
                shopping_support.py                           stripe_support.py
                (fake orders / inventory)                     (real Stripe API)
@@ -114,60 +47,33 @@ connects to both servers simultaneously and merges their tools into one flat lis
 The ReAct agent sees all tools and picks the right one — it never knows or cares
 which server a tool came from.
 
-### What is `stripe_support.py`?
+### Why a custom MCP server for Stripe?
 
-**Stripe is not an MCP server.** Stripe is just a payments company with a REST API.
+Stripe is not an MCP server — it's a payments API. [`mcp_servers/stripe_support.py`](mcp_servers/stripe_support.py)
+is an MCP server that **we own and run**, sitting between the agent and Stripe's REST API.
 
-`mcp_servers/stripe_support.py` is an MCP server that **you own and run**. It sits
-in the middle and translates between the two worlds:
+We tried Stripe's official `@stripe/mcp` npm package first. It exposed 25+ generic
+tools with enormous schemas — the Llama model timed out trying to reason about
+all of them. The custom server has 8 focused tools with small, clear docstrings;
+the model picks the right one instantly.
 
-```
-ReAct agent  →  MCP tool call (list_customers)
-                      ↓
-             stripe_support.py   ← YOUR MCP server (translator)
-                      ↓
-             GET api.stripe.com/v1/customers   ← Stripe REST API
-```
+**Rule:** official MCP servers are great for broad integrations. For production
+use cases you almost always end up writing your own — specific tool names, small
+schemas the model can reason about quickly, and behavior you control.
 
-It lives in `mcp_servers/` because it IS an MCP server — one you built.
-
-### stdio vs SSE
-
-These are two ways the app and the MCP server talk to each other.
+### stdio vs SSE (dev vs prod)
 
 | | stdio | SSE |
 |---|---|---|
-| How | stdin/stdout (pipe) | HTTP over network |
-| Lives | subprocess inside the app process | separate Docker container |
-| When it dies | with the app | independently |
+| Transport | stdin/stdout pipe | HTTP over network |
+| Process | subprocess of the app | standalone Docker container |
 | Use for | local dev | production |
+| Stripe key | in app env | only on the MCP container; app never sees it |
 
-**Dev mode** (`STRIPE_SECRET_KEY` set, no `STRIPE_MCP_URL`):
-The app spawns `stripe_support.py` as a child process. Simple, no Docker needed.
+In production mode, the app sets `STRIPE_MCP_URL=http://stripe-mcp:8001/sse`. The
+secret key is isolated to the MCP container — a useful blast-radius reduction.
 
-**Production mode** (`STRIPE_MCP_URL` set):
-`stripe_support.py` runs as a standalone Docker container. The app connects to it
-over HTTP. Multiple app instances can share one MCP container. The Stripe key lives
-only on the MCP container — the app never sees it.
-
-### When to write your own MCP server
-
-| Situation | What to do |
-|---|---|
-| The company published an official MCP server and it works well | Use it directly (Option 2) |
-| Community built one and it's focused enough | Use it (modelcontextprotocol.io/servers) |
-| No server exists, or the official one is too bloated / slow | Write your own |
-
-We tried Stripe's official `@stripe/mcp` npm package first. It exposed 25+ generic
-tools with enormous schemas — the Llama model timed out trying to reason about all
-of them. Our custom `stripe_support.py` has 8 focused tools with small, clear
-docstrings. The model picks the right one instantly.
-
-**Rule:** official servers are great for broad integrations. For production use cases
-you almost always end up writing your own because you need specific behavior,
-specific tool names, and small schemas the model can reason about quickly.
-
-### Human-in-the-Loop (HITL) for destructive actions
+## Human-in-the-Loop (HITL) for destructive actions
 
 Destructive Stripe actions (refunds) never execute through the agent. The trust
 boundary is architectural — even a smarter model swapped in tomorrow cannot
@@ -198,77 +104,114 @@ Two design decisions hold this together:
 1. **The destructive tool can't execute.** [`mcp_servers/stripe_support.py`](mcp_servers/stripe_support.py)'s
    `create_refund` always returns a confirmation request — it never calls
    `stripe.Refund.create`. The Stripe SDK is only invoked from
-   [`app.py:_execute_approved_refund`](app.py), reached only via the `/approve` endpoint after a
-   valid token is consumed. The agent has no path to that SDK call.
+   [`app.py:_execute_approved_refund`](app.py), reached only via the `/approve`
+   endpoint after a valid token is consumed. The agent has no path to that SDK call.
 
 2. **Disambiguation is server-side, not LLM judgment.** When the user says
    "refund the webcam" and two webcam payments exist, the MCP server itself
    (not the LLM) counts matches and returns `requires_disambig: True` with the
    candidate list. The UI surfaces a pick-one card; selecting it triggers
-   `/approve` with the chosen `payment_intent_id`. LLMs decide what to do
-   ("which customer? which product?"); deterministic code decides what *can* be
-   done.
+   `/approve` with the chosen `payment_intent_id`. LLMs decide *what to do*;
+   deterministic code decides *what can be done*.
 
-Key files: [`src/agents/graph.py`](src/agents/graph.py) (approval gate node and
-routing), [`src/agents/tool_node.py`](src/agents/tool_node.py) (`_check_pending_approval`
+Key files: [`src/agents/graph.py`](src/agents/graph.py) (approval gate node),
+[`src/agents/tool_node.py`](src/agents/tool_node.py) (`_check_pending_approval`
 HITL detector), [`src/utils/services/approval_store.py`](src/utils/services/approval_store.py)
-(token store with 10-min TTL), [`ui.py`](ui.py) (Approve/Reject and disambig cards).
+(token store with 10-min TTL), [`ui.py`](ui.py) (Approve/Reject + disambig cards).
 
 Every pause and decision is tagged in Langfuse (`hitl:pending`,
-`hitl_decision:approved|rejected`, `hitl_kind:approval|disambig`) so the full
-flow shows up as a discoverable trace under the same `session_id` as the chat.
+`hitl_decision:approved|rejected`, `hitl_kind:approval|disambig`) and tied
+back to the original chat trace via shared `session_id`.
 
-### Running the Stripe MCP service
+## Production hygiene
 
-**Dev (stdio):**
+This started as a portfolio piece exercising the three-pillar observability
+framework articulated by [Pooja Palod in the *Data Journey* series](https://datajourney24.substack.com/)
+— **Cost**, **Quality**, **Latency** — each with a measurement script, a CI/cron
+path, and dated reports committed back to the repo. **The reports are the work.**
+
+| Pillar | What it answers | How |
+|---|---|---|
+| **Cost** | What does a task cost? | [`evals/cost/cost_report.py`](evals/cost/cost_report.py) → dated [`docs/reports/cost_*.md`](docs/reports/) (nightly cron) |
+| **Quality** | Are answers grounded, accurate, complete? | [`evals/quality/run_eval.py`](evals/quality/run_eval.py) + LLM judge → dated [`docs/eval-reports/eval_*.md`](docs/eval-reports/). Schema-gated on every PR. |
+| **Latency** | Where is time spent? Where are the tails? | [`evals/latency/latency_report.py`](evals/latency/latency_report.py) → dated [`docs/reports/latency_*.md`](docs/reports/) (nightly cron) |
+
+Plus two reliability behaviours under the latency pillar:
+
+- **Retries with exponential backoff on every NVIDIA call** — [`src/utils/services/retry.py`](src/utils/services/retry.py)
+  (read path) and [`src/utils/services/milvus_store.py`](src/utils/services/milvus_store.py)
+  (ingest). One transient 502/503 no longer surfaces as a 5xx.
+- **Idempotent ingestion** — deterministic per-page `doc_id` + delete-before-insert
+  means re-running an ingest after a mid-stream failure doesn't accumulate
+  duplicate chunks in Milvus.
+
+Design rationale: [`docs/OBSERVABILITY.md`](docs/OBSERVABILITY.md). Build log:
+[`docs/PROGRESS.md`](docs/PROGRESS.md). Latest-numbers index:
+[`docs/dashboards/index.md`](docs/dashboards/index.md).
+
+## Stack
+
+- **API**: FastAPI ([`app.py`](app.py)) — chat, async PDF ingestion, approval, admin.
+- **UI**: Streamlit ([`ui.py`](ui.py)) — multi-user chat, HITL cards, debug panel.
+- **Agents**: LangGraph supervisor + ReAct sub-agents, NVIDIA AI endpoints via LangChain.
+- **Tools**: MCP servers — `stripe_support.py` (real Stripe), `shopping_support.py` (fake fixtures).
+- **Vector store**: Milvus 2.5 — hybrid dense + BM25, RRF-fused, cross-encoder reranked.
+- **State**: Postgres (users / conversations / messages), Redis (per-conversation lock + approval tokens).
+- **Observability**: Langfuse v4 — traces, prompts, timings, HITL tags.
+
+## Layout
+
+- [`app.py`](app.py), [`ui.py`](ui.py) — FastAPI routes + Streamlit UI.
+- [`src/agents/`](src/agents/) — supervisor, intent classifier, RAG node, tool node, graph topology, prompts.
+- [`src/utils/`](src/utils/) — embedder, Milvus store, conversation store, Redis lock, approval token store, retry helper, chat orchestration.
+- [`mcp_servers/`](mcp_servers/) — Stripe + shopping support MCP servers (FastMCP, dual stdio/SSE).
+- [`evals/`](evals/) — Q&A dataset, retrieval metrics, LLM judge, cost/latency aggregators.
+- [`scripts/`](scripts/) — Stripe seeding, payment top-up, locust workload.
+- [`docs/`](docs/) — observability design, progress log, dated reports.
+- [`tests/`](tests/) — unit tests covering the graph, intent classifier, MCP client, tool node, retry pipeline (no real LLM, no network).
+- [`docker-compose.yml`](docker-compose.yml) — Milvus (+etcd, MinIO), Postgres, Redis, Langfuse, Stripe MCP container.
+
+## Run
+
 ```bash
-# Just set the key in .env — the app spawns the server automatically
-STRIPE_SECRET_KEY=rk_test_...
+docker compose up -d                          # Milvus, Postgres, Redis, Langfuse, Stripe MCP
+pip install -r requirements.txt
+uvicorn app:app --reload                      # API on :8000
+streamlit run ui.py                           # UI on :8501
 ```
 
-**Production (SSE Docker container):**
+Required env (see [`.env.example`](.env.example)): `NVIDIA_API_KEY`, `STRIPE_SECRET_KEY`,
+`LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`.
+
+**Seed Stripe test data:**
 ```bash
-# Build once
-docker build -t stripe-mcp -f mcp_servers/Dockerfile mcp_servers/
-
-# Start (reads STRIPE_SECRET_KEY from .env automatically)
-./mcp_servers/run.sh
-
-# Point the app at it
-STRIPE_MCP_URL=http://localhost:8001/sse
+STRIPE_SECRET_KEY=sk_test_... python scripts/seed_stripe.py        # customers, products, payments
+STRIPE_SECRET_KEY=sk_test_... python scripts/add_payments.py       # extra payments for disambig testing
 ```
 
-### Seeding test data
-
-```bash
-# Uses sk_test_ (full secret key) — needed to confirm payments in test mode
-STRIPE_SECRET_KEY=sk_test_... python scripts/seed_stripe.py
-```
-
-Creates: 3 customers (John Doe, Jane Smith, Bob Wilson), 3 products, 2 confirmed
-payments, 1 declined payment (Bob), 1 open invoice.
-
-### Test conversations
-
+**Try these conversations:**
 ```
 "I'm john.doe@example.com, what did I pay for recently?"
 "Jane Smith wants a refund for her headphones purchase"        # HITL: Approve/Reject card
-"Refund Bob for the webcam"                                    # HITL: disambig (after seeding multiple webcam charges)
+"Refund Bob for the webcam"                                    # HITL: disambig (multiple webcam charges)
 "Bob Wilson says his payment failed — what happened?"
-"Show me Jane's open invoices"
 "Is the Wireless Headphones in stock and what does it cost in Stripe?"
 ```
 
-Top up additional payments for disambig testing:
+## Generating reports locally
+
 ```bash
-STRIPE_SECRET_KEY=sk_test_... python scripts/add_payments.py
+python -m evals.quality.run_eval --output docs/eval-reports/eval_$(date +%Y-%m-%d).md
+python -m evals.cost.cost_report --source live --days 7 --output docs/reports/cost_$(date +%Y-%m-%d).md
+python -m evals.latency.latency_report --source live --days 7 --output docs/reports/latency_$(date +%Y-%m-%d).md
 ```
 
----
+Cost and latency also run nightly via GitHub Actions — see [`.github/workflows/`](.github/workflows/).
 
 ## Key endpoints
 
-- `POST /chat` — multi-turn chat, per-conversation Redis lock, semantic cache + RAG fallback.
+- `POST /chat` — multi-turn chat, per-conversation Redis lock, semantic cache + RAG/action routing.
+- `POST /approve` — consume an approval token, execute or reject the paused destructive action.
 - `POST /upload_pdf_async` — async ingestion with retry, resumable via `start_page=N`, idempotent on re-run; poll `GET /task_status/{task_id}`.
 - `GET /list_conversations`, `GET /list_messages` — history for a `user_external_id`.
 - Admin: `/clear_post_gres`, `/clear_cache`, `/clear_milvus`, `/view_milvus_store`, `/debug_database`.
