@@ -19,7 +19,6 @@ from src.utils.api.schemas import (
     ChatResponse,
     PendingApproval,
 )
-from src.utils.services.approval_store import consume_token, create_token
 from src.utils.api.task_registry import create_task, get_status
 from src.utils.chat.chat_service import cache_output, rag_output
 from src.utils.db.database import Base, engine, get_db
@@ -33,6 +32,7 @@ from src.utils.errors import (
     MilvusError,
 )
 from src.utils.observability import observe, update_current_trace
+from src.utils.services.approval_store import consume_token, create_token
 from src.utils.services.conversation_store import get_conversation_service
 from src.utils.services.embedder import EmbeddingHandler
 from src.utils.services.logger_config import logger

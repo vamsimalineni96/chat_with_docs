@@ -179,9 +179,8 @@ def _check_pending_approval(
     If approval_decision="approved", return None so the agent proceeds normally.
     If approval_decision="rejected", return a rejection sentinel.
     """
-    import json  # noqa: PLC0415
-
     import ast  # noqa: PLC0415
+    import json  # noqa: PLC0415
 
     if approval_decision == "approved":
         return None  # already approved — let the agent proceed
