@@ -72,24 +72,41 @@ python -m evals.latency.latency_report --source live --days 7 \
 
 Both cost and latency also run as nightly GitHub Actions workflows; see [`.github/workflows/`](.github/workflows/).
 
-## Stripe MCP Integration (`feature/chat_stripe`)
+## Multi-agent + Stripe MCP Integration
 
-This branch adds a second answer path alongside RAG: the chat graph can now route
-questions to real Stripe APIs via an MCP tool-call agent.
+The chat graph is a multi-agent supervisor that routes each question to the right
+specialist, then optionally takes real action against Stripe.
 
-### How it fits together
+### Multi-agent orchestration
+
+An intent classifier ([`src/agents/intent_classifier.py`](src/agents/intent_classifier.py))
+labels every question, and a supervisor ([`src/agents/supervisor.py`](src/agents/supervisor.py))
+routes it down one of four paths:
+
+| Intent | Path | What it does |
+|---|---|---|
+| `research` | RAG | Hybrid retrieval over the doc corpus, rerank, LLM answer |
+| `action` | Tool ReAct agent | Calls MCP tools (Stripe, shopping) to *do* something |
+| `both` | RAG + Tool, then aggregator | Runs both branches in parallel, fuses answers |
+| `out_of_scope` | Canned refusal | Heuristic-gated short-circuit |
+
+The full topology lives in [`src/agents/graph.py`](src/agents/graph.py). Each branch
+is its own `@observe`'d Langfuse span so the routing decision and every downstream
+call show up under one trace.
+
+### How the action path fits together
 
 ```
 User question
       │
       ▼
-intent classifier  ──► "tool_call" ──► ReAct agent
-                                            │
-                          ┌─────────────────┴──────────────────┐
-                          ▼                                     ▼
-               shopping_support.py                   stripe_support.py
-               (fake orders / inventory)             (real Stripe API)
-                    stdio subprocess                  SSE Docker container
+intent classifier  ──► "action" / "both" ──► ReAct tool agent
+                                                    │
+                          ┌─────────────────────────┴──────────────────┐
+                          ▼                                             ▼
+               shopping_support.py                           stripe_support.py
+               (fake orders / inventory)                     (real Stripe API)
+                    stdio subprocess                          SSE Docker container
 ```
 
 The `MultiServerMCPClient` in [`src/agents/mcp_client.py`](src/agents/mcp_client.py)
@@ -150,6 +167,57 @@ docstrings. The model picks the right one instantly.
 you almost always end up writing your own because you need specific behavior,
 specific tool names, and small schemas the model can reason about quickly.
 
+### Human-in-the-Loop (HITL) for destructive actions
+
+Destructive Stripe actions (refunds) never execute through the agent. The trust
+boundary is architectural — even a smarter model swapped in tomorrow cannot
+unilaterally issue a refund.
+
+```
+User: "refund Bob for the webcam"
+      │
+      ▼
+ReAct agent → create_refund(pi_id)
+                  │
+                  ▼
+        Tool returns {requires_confirmation: True, ...}    ← never actually refunds
+                  │
+                  ▼
+        Graph PAUSES, mints an approval token
+                  │
+                  ▼
+        UI surfaces an Approve/Reject card
+                  │
+                  ▼
+        POST /approve → stripe.Refund.create(...)          ← runs OUT-of-band
+                                                              via direct SDK
+```
+
+Two design decisions hold this together:
+
+1. **The destructive tool can't execute.** [`mcp_servers/stripe_support.py`](mcp_servers/stripe_support.py)'s
+   `create_refund` always returns a confirmation request — it never calls
+   `stripe.Refund.create`. The Stripe SDK is only invoked from
+   [`app.py:_execute_approved_refund`](app.py), reached only via the `/approve` endpoint after a
+   valid token is consumed. The agent has no path to that SDK call.
+
+2. **Disambiguation is server-side, not LLM judgment.** When the user says
+   "refund the webcam" and two webcam payments exist, the MCP server itself
+   (not the LLM) counts matches and returns `requires_disambig: True` with the
+   candidate list. The UI surfaces a pick-one card; selecting it triggers
+   `/approve` with the chosen `payment_intent_id`. LLMs decide what to do
+   ("which customer? which product?"); deterministic code decides what *can* be
+   done.
+
+Key files: [`src/agents/graph.py`](src/agents/graph.py) (approval gate node and
+routing), [`src/agents/tool_node.py`](src/agents/tool_node.py) (`_check_pending_approval`
+HITL detector), [`src/utils/services/approval_store.py`](src/utils/services/approval_store.py)
+(token store with 10-min TTL), [`ui.py`](ui.py) (Approve/Reject and disambig cards).
+
+Every pause and decision is tagged in Langfuse (`hitl:pending`,
+`hitl_decision:approved|rejected`, `hitl_kind:approval|disambig`) so the full
+flow shows up as a discoverable trace under the same `session_id` as the chat.
+
 ### Running the Stripe MCP service
 
 **Dev (stdio):**
@@ -184,10 +252,16 @@ payments, 1 declined payment (Bob), 1 open invoice.
 
 ```
 "I'm john.doe@example.com, what did I pay for recently?"
-"Jane Smith wants a refund for her headphones purchase"
+"Jane Smith wants a refund for her headphones purchase"        # HITL: Approve/Reject card
+"Refund Bob for the webcam"                                    # HITL: disambig (after seeding multiple webcam charges)
 "Bob Wilson says his payment failed — what happened?"
 "Show me Jane's open invoices"
 "Is the Wireless Headphones in stock and what does it cost in Stripe?"
+```
+
+Top up additional payments for disambig testing:
+```bash
+STRIPE_SECRET_KEY=sk_test_... python scripts/add_payments.py
 ```
 
 ---
