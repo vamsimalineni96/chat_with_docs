@@ -158,32 +158,118 @@ def _extract_tool_calls(messages: list[Any]) -> list[dict[str, Any]]:
     return calls
 
 
+# Tools that require human approval before execution.
+_DESTRUCTIVE_TOOLS = {"create_refund"}
+
+
+def _check_pending_approval(
+    messages: list[Any],
+    approval_decision: str | None,
+) -> dict[str, Any] | None:
+    """Scan ReAct ToolMessages for a HITL pause signal.
+
+    Two pause shapes are recognized:
+      - requires_confirmation (from create_refund) → kind="approval"
+      - requires_disambig (from request_refund_disambig) → kind="disambig"
+
+    Both halt the graph and surface UI to the human. The /approve endpoint
+    executes the refund out-of-band via the Stripe SDK regardless of which
+    kind triggered the pause.
+
+    If approval_decision="approved", return None so the agent proceeds normally.
+    If approval_decision="rejected", return a rejection sentinel.
+    """
+    import json  # noqa: PLC0415
+
+    import ast  # noqa: PLC0415
+
+    if approval_decision == "approved":
+        return None  # already approved — let the agent proceed
+
+    for m in messages:
+        msg_type = type(m).__name__
+        content = getattr(m, "content", None)
+        logger.debug("HITL scan: type=%s content_type=%s content_preview=%s",
+                     msg_type, type(content).__name__, str(content)[:200])
+        if content is None:
+            continue
+        # Content can be a string or a list of content blocks
+        if isinstance(content, list):
+            raw = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in content
+            )
+        else:
+            raw = str(content)
+
+        if not raw.strip():
+            continue
+
+        data = None
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            try:
+                data = ast.literal_eval(raw)
+            except (ValueError, SyntaxError):
+                pass
+
+        if not isinstance(data, dict):
+            continue
+
+        if data.get("requires_disambig"):
+            logger.info("HITL: found requires_disambig in %s", msg_type)
+            if approval_decision == "rejected":
+                return {"rejected": True, "tool": "create_refund", "kind": "disambig"}
+            return {
+                "kind": "disambig",
+                "tool": "create_refund",
+                "candidates": data.get("candidates", []),
+                "display": data.get("display", "Multiple matching payments — pick one."),
+            }
+
+        if data.get("requires_confirmation"):
+            logger.info("HITL: found requires_confirmation in %s", msg_type)
+            if approval_decision == "rejected":
+                return {"rejected": True, "tool": "create_refund", "kind": "approval"}
+            return {
+                "kind": "approval",
+                "tool": "create_refund",
+                "args": {
+                    "payment_intent_id": data.get("payment_intent_id", ""),
+                    "amount": data.get("amount", 0),
+                },
+                "display": data.get("display", "Refund requires confirmation"),
+            }
+    logger.debug("HITL: no requires_confirmation/disambig found in %d messages", len(messages))
+    return None
+
+
 @observe(name="action_agent")
 async def run_tool_agent(
     question: str,
     *,
     history: list[dict] | None = None,
+    approval_decision: str | None = None,
     agent: Any | None = None,
 ) -> dict[str, Any]:
     """Run the React agent on `question` and return a node-shaped dict.
 
-    `history` is the prior conversation turns as a list of
-    {"role": "user"|"assistant", "content": str} dicts (same shape as
-    ChatGraphState["history"]). When provided, the turns are prepended to
-    the message list so the ReAct agent can resolve pronouns and follow-up
-    questions ("what's the return policy for *that* order?").
+    `history` is the prior conversation turns (same shape as ChatGraphState["history"]).
+    `approval_decision` is "approved" | "rejected" | None — injected by the graph
+    on the resume path after human-in-the-loop confirmation.
 
     Returns:
         {
-          "answer": str,                      # always populated
-          "tool_calls": list[dict],           # [] on failure
-          "t_llm_start": float,               # perf_counter at invoke
-          "t_llm_end": float,                 # perf_counter at return
-          "error": str | None,                # populated on failure path
+          "answer": str,
+          "tool_calls": list[dict],
+          "pending_approval": dict | None,   # set when paused for HITL
+          "t_llm_start": float,
+          "t_llm_end": float,
+          "error": str | None,
         }
 
-    Never raises. The graph's postprocess step is what surfaces an
-    "I couldn't help" response to the user via the refusal heuristic.
+    Never raises.
     `agent=` is the DI seam tests use to inject a fake agent.
     """
     from langchain_core.messages import AIMessage, HumanMessage  # noqa: PLC0415
@@ -229,7 +315,8 @@ async def run_tool_agent(
         # Langfuse trace) propagates naturally through `await` in the
         # same event loop — no manual context copying needed.
         cb = langfuse_callback()
-        invoke_state = {"messages": [HumanMessage(content=_build_user_message(question))]}
+        messages = [HumanMessage(content=_build_user_message(question))]
+        invoke_state = {"messages": messages}
         if cb is not None:
             result = await agent.ainvoke(invoke_state, config={"callbacks": [cb]})
         else:
@@ -266,15 +353,48 @@ async def run_tool_agent(
             "error": "agent returned empty message list",
         }
 
+    # Check for destructive tool calls before returning the answer.
+    approval = _check_pending_approval(messages, approval_decision)
+    if approval and approval.get("rejected"):
+        return {
+            "answer": "Understood — the refund has been cancelled. Let me know if you need anything else.",
+            "tool_calls": [],
+            "pending_approval": None,
+            "tool_failure_reason": None,
+            "t_llm_start": t_start,
+            "t_llm_end": time.perf_counter(),
+            "error": None,
+        }
+    if approval:
+        # Pause — surface either an approval card or a disambig list.
+        if approval.get("kind") == "disambig":
+            pause_msg = (
+                f"{approval['display']} Please pick which payment to refund "
+                "from the options below."
+            )
+        else:
+            pause_msg = (
+                f"I found the payment. Before I proceed: {approval['display']}. "
+                "Please confirm."
+            )
+        return {
+            "answer": pause_msg,
+            "tool_calls": [],
+            "pending_approval": approval,
+            "tool_failure_reason": None,
+            "t_llm_start": t_start,
+            "t_llm_end": time.perf_counter(),
+            "error": None,
+        }
+
     final = messages[-1]
     answer = getattr(final, "content", None) or ""
     if not answer:
-        # Model returned an empty final message — can happen when the tool
-        # schema payload is too large for the model to synthesize a reply.
         logger.warning("Tool sub-agent returned empty content in final message")
         return {
             "answer": TOOL_FAILURE_ANSWER,
             "tool_calls": _extract_tool_calls(messages),
+            "pending_approval": None,
             "tool_failure_reason": "empty_content",
             "t_llm_start": t_start,
             "t_llm_end": t_end,
@@ -283,6 +403,7 @@ async def run_tool_agent(
     return {
         "answer": answer,
         "tool_calls": _extract_tool_calls(messages),
+        "pending_approval": None,
         "tool_failure_reason": None,
         "t_llm_start": t_start,
         "t_llm_end": t_end,

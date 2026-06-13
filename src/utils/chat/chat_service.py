@@ -147,10 +147,11 @@ async def rag_output(
         raise InferenceError("Unexpected error from chat graph.") from e
 
     answer = result["answer"]
-    t_milvus_start = result["t_milvus_start"]
-    t_milvus_end = result["t_milvus_end"]
-    t_llm_start = result["t_llm_start"]
-    t_llm_end = result["t_llm_end"]
+    pending_approval = result.get("pending_approval")
+    t_milvus_start = result.get("t_milvus_start", 0.0)
+    t_milvus_end = result.get("t_milvus_end", 0.0)
+    t_llm_start = result.get("t_llm_start", 0.0)
+    t_llm_end = result.get("t_llm_end", 0.0)
     debug_info = result.get("debug_info")
 
     # Trace-root tagging: the @observe(name="rag_output") span is the
@@ -203,6 +204,31 @@ async def rag_output(
                 "update_current_trace from chat_service tagging failed (non-fatal): %s",
                 e,
             )
+
+    # When paused for HITL approval, skip storing the assistant message —
+    # the real answer will be stored after the user approves/rejects.
+    if pending_approval:
+        kind = pending_approval.get("kind", "approval")
+        args = pending_approval.get("args") or {}
+        candidates = pending_approval.get("candidates") or []
+        try:
+            update_current_trace(
+                tags=[
+                    "hitl:pending",
+                    f"hitl_tool:{pending_approval.get('tool', 'unknown')}",
+                    f"hitl_kind:{kind}",
+                ],
+                metadata={
+                    "hitl_pending": True,
+                    "hitl_kind": kind,
+                    "hitl_payment_intent_id": args.get("payment_intent_id", ""),
+                    "hitl_amount_cents": args.get("amount", 0),
+                    "hitl_candidate_count": len(candidates),
+                },
+            )
+        except Exception as e:
+            logger.debug("HITL trace tagging failed (non-fatal): %s", e)
+        return {"answer": answer, "debug": debug_info, "pending_approval": pending_approval}
 
     logger.info("Storing the chatbot's reply to the user query")
     try:
@@ -281,4 +307,4 @@ async def rag_output(
         if tool_calls:
             debug_info["tool_calls"] = tool_calls
 
-    return {"answer": answer, "debug": debug_info}
+    return {"answer": answer, "debug": debug_info, "pending_approval": None}
