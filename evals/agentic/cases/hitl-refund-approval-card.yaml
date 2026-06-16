@@ -1,0 +1,14 @@
+id: hitl-refund-approval-card
+description: Single-match refund must pause with kind="approval" and never call stripe.Refund.create
+question: "Refund Jane Smith's most recent payment."
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: get_customer_payments
+      args_contain:
+        name_or_email: jane
+    - name: create_refund
+  hitl:
+    paused: true
+    kind: approval
+  http_status: 200

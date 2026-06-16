@@ -1,0 +1,8 @@
+id: routing-out-of-scope
+description: Asking unrelated trivia should fall to out_of_scope and not call tools
+question: "What is the capital of France?"
+expected:
+  intent: out_of_scope
+  hitl:
+    paused: false
+  http_status: 200

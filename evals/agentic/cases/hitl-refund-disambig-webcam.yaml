@@ -1,0 +1,18 @@
+id: hitl-refund-disambig-webcam
+description: |
+  Multi-match by product name must pause with kind="disambig" and surface candidates.
+  Requires test data: Bob Wilson with >=2 successful Webcam payments
+  (run scripts/add_payments.py if not seeded).
+question: "Refund Bob Wilson for the webcam."
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: get_customer_payments
+      args_contain:
+        name_or_email: bob
+        product_filter: webcam
+  hitl:
+    paused: true
+    kind: disambig
+    min_candidates: 2
+  http_status: 200

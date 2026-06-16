@@ -1,0 +1,9 @@
+id: routing-research-rag
+description: |
+  A doc-corpus-only question (shipping policy detail) should route to research.
+  No MCP tool exposes shipping/lost-package policy — answer must come from RAG
+  over store_policies.pdf / shipping_guide.pdf.
+question: "If my package shows as delivered but never arrived, how long do I have to file a claim?"
+expected:
+  intent: research
+  http_status: 200

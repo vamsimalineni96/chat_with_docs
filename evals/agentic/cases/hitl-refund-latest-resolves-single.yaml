@@ -1,0 +1,14 @@
+id: hitl-refund-latest-resolves-single
+description: |
+  Even when multiple payments exist, the qualifier "latest" disambiguates to the
+  first one — the agent should pass through to a single-payment approval card,
+  NOT a disambig list.
+question: "Refund Bob Wilson for his most recent payment."
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: create_refund
+  hitl:
+    paused: true
+    kind: approval
+  http_status: 200

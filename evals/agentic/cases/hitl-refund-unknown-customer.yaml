@@ -1,0 +1,14 @@
+id: hitl-refund-unknown-customer
+description: |
+  Refund for a customer that doesn't exist must NOT pause for HITL.
+  The agent should look up payments, see none, and stop — no create_refund call.
+question: "Refund Charlie McNonexistent for his recent purchase."
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: get_customer_payments
+      args_contain:
+        name_or_email: charlie
+  hitl:
+    paused: false
+  http_status: 200

@@ -1,0 +1,12 @@
+id: routing-action-list-payments
+description: Customer payment history is a pure action question
+question: "What did John Doe pay for recently?"
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: get_customer_payments
+      args_contain:
+        name_or_email: john
+  hitl:
+    paused: false
+  http_status: 200

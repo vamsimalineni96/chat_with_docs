@@ -1,0 +1,13 @@
+id: routing-both-doc-plus-action
+description: |
+  Question that needs RAG context (shipping options, not in any tool) AND a tool
+  call (inventory) should route to "both" — research and action branches run
+  in parallel and the aggregator fuses the answer.
+question: "How much is express shipping, and is SKU-001 in stock right now?"
+expected:
+  intent: both
+  tool_calls:
+    - name: check_inventory
+      args_contain:
+        sku: SKU-001
+  http_status: 200

@@ -1,0 +1,10 @@
+id: tool-return-policy-window
+description: Policy window is exposed as an MCP tool, not pulled from RAG
+question: "What is the return window for electronics?"
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: get_return_policy_window
+      args_contain:
+        category: electronics
+  http_status: 200

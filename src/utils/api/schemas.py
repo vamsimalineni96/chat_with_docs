@@ -21,6 +21,12 @@ class ChatDebug(BaseModel):
     rendered_prompt: list[dict[str, str]] = []
     history_text: str | None = None
     timings_ms: dict[str, float] = {}
+    # Agentic decisions surfaced for the eval harness; populated by chat_service.
+    intent: str | None = None
+    intent_reasoning: str | None = None
+    tool_calls: list[dict[str, Any]] = []
+    tool_failure_reason: str | None = None
+    pending_approval: dict[str, Any] | None = None
 
 
 class PendingApproval(BaseModel):

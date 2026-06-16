@@ -1,0 +1,10 @@
+id: routing-action-list-products
+description: Asking what products are sold should call list_products
+question: "What products do you sell and how much do they cost?"
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: list_products
+  hitl:
+    paused: false
+  http_status: 200

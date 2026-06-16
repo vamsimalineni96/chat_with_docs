@@ -1,0 +1,12 @@
+id: tool-check-inventory
+description: Asking stock for a specific SKU should hit check_inventory
+question: "Is SKU-001 in stock?"
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: check_inventory
+      args_contain:
+        sku: SKU-001
+  hitl:
+    paused: false
+  http_status: 200

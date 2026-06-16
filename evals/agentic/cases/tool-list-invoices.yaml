@@ -1,0 +1,12 @@
+id: tool-list-invoices
+description: Listing open invoices should call list_invoices with the customer name
+question: "Show me Jane Smith's open invoices."
+expected:
+  intent: tool_call
+  tool_calls:
+    - name: list_invoices
+      args_contain:
+        name_or_email: jane
+  hitl:
+    paused: false
+  http_status: 200

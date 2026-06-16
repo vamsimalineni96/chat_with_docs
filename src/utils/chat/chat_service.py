@@ -181,6 +181,20 @@ async def rag_output(
     if tool_failure_reason:
         trace_tags.append(f"mcp_failure:{tool_failure_reason}")
 
+    # Expose agentic decisions in debug_info so the eval harness can assert
+    # on them without scraping Langfuse. Populated regardless of HITL pause.
+    if debug_info is not None:
+        debug_info["intent"] = intent
+        debug_info["intent_reasoning"] = result.get("intent_reasoning")
+        debug_info["tool_calls"] = tool_calls
+        debug_info["tool_failure_reason"] = tool_failure_reason
+        if pending_approval:
+            debug_info["pending_approval"] = {
+                "kind": pending_approval.get("kind", "approval"),
+                "tool": pending_approval.get("tool"),
+                "candidate_count": len(pending_approval.get("candidates") or []),
+            }
+
     heuristics_report = result.get("heuristics")
     if heuristics_report is not None:
         trace_tags.append(
