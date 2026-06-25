@@ -17,7 +17,7 @@ jobs:
     name: Generate + commit nightly cost report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Authenticate as a real user (via fine-grained PAT) so the
           # auto-commit push can bypass main's "require PR" rule. The
