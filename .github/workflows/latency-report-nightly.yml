@@ -17,7 +17,7 @@ jobs:
     name: Generate + commit nightly latency report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # Authenticate via fine-grained PAT (BOT_PAT) so the auto-commit
           # can bypass main's "require PR" rule — same as the cost cron.
